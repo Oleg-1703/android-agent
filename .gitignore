@@ -11,3 +11,5 @@ local.properties
 .env
 *.log
 secrets.properties
+
+.kotlin/
