@@ -21,6 +21,8 @@ Requires JDK 17, Android SDK platform 35 / build-tools 35.0.0; minSdk 30, target
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
+For the dependency-free Android 11 smoke runner, build `./gradlew assembleDebugAndroidTest`, boot a clean disposable API 30 emulator and run `./scripts/device-smoke.sh` with `ANDROID_HOME` set. The script refuses non-emulator devices. It checks Activity/Keystore/foreground failure behavior and force-stops/relaunches to check encrypted persistence.
+
 APK: `app/build/outputs/apk/debug/app-debug.apk`. GitHub Actions uploads `android-agent-debug` after successful tests/lint/build. Wrapper 8.9 distribution checksum is pinned. CI APKs use ephemeral debug signing keys; see installation notes before updating an existing install.
 
 ## Roadmap / remaining acceptance

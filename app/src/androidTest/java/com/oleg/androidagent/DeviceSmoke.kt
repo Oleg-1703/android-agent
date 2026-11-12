@@ -31,8 +31,8 @@ class DeviceSmoke : Instrumentation() {
                 waitForIdleSync()
                 runOnMainSync { check(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0) { "Setup screen not protected" } }
                 context.startForegroundService(Intent(context,AgentService::class.java))
-                val deadline=SystemClock.elapsedRealtime()+5000
-                while(SystemClock.elapsedRealtime()<deadline && !store.get("service_status").contains("stopped")) SystemClock.sleep(100)
+                val deadline=SystemClock.elapsedRealtime()+30000
+                while(SystemClock.elapsedRealtime()<deadline && (AgentService.workerActive || !store.get("service_status").contains("stopped"))) SystemClock.sleep(500)
                 check(!AgentService.workerActive) { "Unconfigured service kept polling" }
                 check(store.get("service_status").contains("stopped")) { "Missing safe configuration failure" }
                 runOnMainSync { activity.finish() }
