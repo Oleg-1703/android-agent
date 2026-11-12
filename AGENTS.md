@@ -18,3 +18,15 @@ Keep README, roadmap, architecture decisions and known limitations current. Reco
 
 # Autonomous execution
 Choose the next roadmap task independently, continue after the first commit, and finish authorized work within available tools/time. Do not ask about routine implementation choices. Document blockers and continue independent tasks. Never claim unverified functionality. Real-device and account tests may require the user; never request passwords/tokens in chat, provide secure in-app entry.
+
+## Current module map
+- `MainActivity`: in-app secret entry, OAuth browser/verifier flow, opt-in controls and manual uncertain-write acknowledgement.
+- `SecretStore` / `StateStore`: Keystore AES-GCM encrypted configuration/state with synchronous commits.
+- `AgentService`, `TelegramApi`, `TelegramAccess`: single-worker foreground polling, owner authorization, media bounds and backoff.
+- `Meals`, `MealEngine`, `Portions`: strict command validation, candidate selection, reviewed quantities and durable no-replay write/verification state.
+- `OAuth1`, `FatSecretApi` / `DiaryApi`: signed official existing-account OAuth and food/diary calls.
+- `AiMeals`: untrusted structured extraction/transcription only, never direct actions.
+- `FatAccessibilityService`, `Automation`: local package-restricted primitives; no validated FatSecret UI recipe.
+- `app/src/test`: JVM contracts/state/security regression tests. `app/src/androidTest`: dependency-free disposable-device smoke runner; never run against configured personal devices.
+
+Never remove the HTTP 503 no-replay interceptor or pre-write state commit without equivalent regression coverage. Do not add automatic create retries, automatic uncertain-write acknowledgement, broad app permissions, or LLM-driven confirmation.
