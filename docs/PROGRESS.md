@@ -43,3 +43,6 @@ Installed app and test APK on the Android 11 AOSP x86_64 software emulator. The 
 
 ## Handoff / next step
 Install the PR's debug APK on Realme and follow docs/INSTALL_RU.md. Enter credentials only in the app, authorize the existing FatSecret account, compare the read-only diary count, then review/confirm one small test entry and verify it in FatSecret. Keep #1–4 open until the listed network/lock/battery/account/media scenarios pass. Do not merge this draft as an accepted MVP solely because CI or emulator smoke tests passed. Next code work should be driven by sanitized real-device/account failure evidence; never fabricate successful live results or ask for tokens in chat.
+
+## Distribution notices
+Inspected debugRuntimeClasspath and packaged resources. Added Apache-2.0 and MPL-2.0 license texts plus runtime dependency notices to APK assets; retained OkHttp's original Public Suffix List NOTICE. No agent source was imported. This packaging-only follow-up does not change runtime behavior.

@@ -36,3 +36,5 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`. GitHub Actions uploads `androi
 The repository is public. Never commit bot/model/OAuth credentials, meal history, logs or signing keys. A confirmed food entry is a real diary modification. The app never automatically retries a create with an uncertain result; inspect your diary before acknowledging its local block. The configured private Telegram owner is the only remote user. Accessibility is optional for the API path and limited to FatSecret. Phone control cannot work while locked. Read the installation guide for exact command semantics, limits and recovery.
 
 Reuses OkHttp (Apache-2.0) and Android platform APIs. No upstream agent source has been copied. See the source/license audit before any future reuse.
+
+Runtime dependency notices and full Apache-2.0/MPL-2.0 license texts are bundled in [APK assets](app/src/main/assets/licenses). Upstream Public Suffix List NOTICE is preserved.
