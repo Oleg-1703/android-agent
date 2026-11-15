@@ -1,0 +1,59 @@
+"""Read-only real-app acceptance on the dedicated emulator; never clicks SAVE."""
+import argparse
+from pathlib import Path
+import subprocess
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--adb", type=Path, required=True)
+    parser.add_argument("--pc-config", type=Path)
+    args = parser.parse_args()
+    base = [str(args.adb), "-s", "emulator-5556"]
+
+    def adb(*arguments):
+        return subprocess.run(base + list(arguments), check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+    if adb("shell", "getprop", "ro.kernel.qemu") != "1" or adb("shell", "getprop", "ro.build.version.sdk") != "30":
+        raise SystemExit("Dedicated API 30 emulator required")
+    component = "com.oleg.androidagent/.FatAccessibilityService"
+    original = adb("shell", "settings", "get", "secure", "enabled_accessibility_services")
+    previous = [] if original == "null" else original.split(":")
+    others = [item for item in previous if "com.oleg.androidagent/" not in item]
+
+    def connect():
+        adb("shell", "settings", "put", "secure", "enabled_accessibility_services", ":".join(others) or "null")
+        adb("shell", "settings", "put", "secure", "enabled_accessibility_services", ":".join(others + [component]))
+        adb("shell", "settings", "put", "secure", "accessibility_enabled", "1")
+
+    if args.pc_config:
+        adb("shell", "run-as", "com.oleg.androidagent", "mkdir", "-p", "files")
+        adb("push", str(args.pc_config), "/data/local/tmp/android-agent-pc-test.json")
+        try:
+            adb("shell", "run-as", "com.oleg.androidagent", "cp", "/data/local/tmp/android-agent-pc-test.json", "files/test-config.json")
+        finally:
+            adb("shell", "rm", "/data/local/tmp/android-agent-pc-test.json")
+    phase = "pc-live-draft" if args.pc_config else "ui-live-read"
+    command = base + ["shell", "am", "instrument", "-r", "-w", "-e", "phase", phase,
+                      "com.oleg.androidagent.test/com.oleg.androidagent.DeviceSmoke"]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        # Instrumentation force-stops the target process. Rebind only our service;
+        # FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES is set by this test phase.
+        time.sleep(2)
+        connect()
+        stdout, stderr = process.communicate(timeout=150)
+        print(stdout)
+        if process.returncode or "INSTRUMENTATION_CODE: -1" not in stdout or "PASS:" not in stdout:
+            raise SystemExit("Real-app dry-run failed; diary SAVE was never requested")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+        adb("shell", "run-as", "com.oleg.androidagent", "rm", "-f", "files/test-config.json")
+        connect()
+
+
+if __name__ == "__main__":
+    main()

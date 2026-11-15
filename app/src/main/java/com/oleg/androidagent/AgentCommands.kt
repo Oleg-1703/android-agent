@@ -11,7 +11,8 @@ class AgentCommands(
     private val store: StateStore,
     private val config: JSONObject,
     private val diary: DiaryApi,
-    private val client: OkHttpClient
+    private val client: OkHttpClient,
+    private val ui: FatUi? = null
 ) {
     private val engine = MealEngine(store, diary)
     private val apiConnected: Boolean get() = config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()
@@ -24,6 +25,9 @@ class AgentCommands(
         val text = message.optString("text", message.optString("caption")).trim()
         val command = text.substringBefore(' ').substringBefore('@').lowercase(Locale.ROOT)
         val natural = text.lowercase(Locale.ROOT).trimEnd('?', '.', '!')
+        if (ui != null && !config.optBoolean("legacy_api_mode")) {
+            return handleUi(text, command, natural)
+        }
         when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> return CommandReply(
                 "Я на связи. Управление идёт прямо с Android.\n\n" +
@@ -89,5 +93,36 @@ class AgentCommands(
         }
         require(text.isNotBlank()) { "Пришли текст, фото с весом продуктов или голосовое сообщение." }
         return CommandReply(engine.prepare(ai.parse(text)))
+    }
+
+    private fun handleUi(text: String, command: String, natural: String): CommandReply {
+        val screen = requireNotNull(ui)
+        val meals = UiMealEngine(store, screen)
+        return when {
+            command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
+                "Управляю установленным FatSecret. Developer-ключи не нужны. Телефон должен быть разблокирован, специальные возможности Android Agent включены.\n\n" +
+                    "/today - сводка дневника\n/meal ${LocalDate.now()} lunch banana=100 - найти продукт и подготовить порцию\n" +
+                    "/pick 1 НОМЕР - выбрать продукт\n/confirm КОД - сохранить после проверки\n/cancel - отмена\n/status - состояние\n/stop - остановка\n\n" +
+                    "По одному продукту, только сегодня. breakfast - завтрак, lunch - обед, dinner - ужин, other - перекус. ИИ по подписке на ПК подключается отдельно; API-ключ не требуется."
+            )
+            command == "/status" || natural == "статус" -> CommandReply(
+                "Telegram на связи. FatSecret: управление экраном. " +
+                    (if (FatAccessibilityService.instance != null) "Специальные возможности включены. " else "Включи специальные возможности Android Agent. ") +
+                    (if (store.get("write_intent").isNotBlank()) "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." else "Непроверенных записей нет.")
+            )
+            command == "/stop" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
+            command == "/cancel" || natural == "отмена" -> CommandReply(meals.cancel())
+            command == "/today" || natural in setOf("сегодня", "дневник", "что я сегодня ел", "что я ел сегодня") -> CommandReply(screen.today())
+            command == "/meal" -> CommandReply(meals.prepare(Meals.parse(text)))
+            command == "/pick" -> {
+                val parts = text.split(Regex("\\s+"))
+                require(parts.size == 3) { "Выбор: /pick 1 НОМЕР" }
+                CommandReply(meals.pick(requireNotNull(parts[1].toIntOrNull()), requireNotNull(parts[2].toIntOrNull())))
+            }
+            command == "/confirm" -> CommandReply(meals.confirm(text.substringAfter(' ', "").trim()))
+            text.startsWith("/") -> CommandReply("Не знаю эту команду. Пришли /help.")
+            text.isNotBlank() -> CommandReply(meals.prepare(PcBrain(config, client).parse(text)))
+            else -> CommandReply("Пришли текст еды с весом и приёмом пищи. Фото и голос пока не подключены; API-ключ покупать не нужно.")
+        }
     }
 }

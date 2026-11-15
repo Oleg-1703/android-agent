@@ -18,7 +18,13 @@ import java.io.File
 /** Test APK only. Refuses physical devices and never exports configured secrets. */
 class DeviceSmoke : Instrumentation() {
     private var phase = "write"
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); phase = arguments?.getString("phase") ?: "write"; start() }
+    private var reviewedTest = false
+    override fun onCreate(arguments: Bundle?) {
+        super.onCreate(arguments)
+        phase = arguments?.getString("phase") ?: "write"
+        reviewedTest = arguments?.getString("reviewed_test") == "banana-1g-lunch"
+        start()
+    }
     private fun waitUntil(label: String, timeout: Long = 30_000, test: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + timeout
         while (!test() && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(200)
@@ -77,13 +83,54 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val qemu = uiAutomation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
+            val automation = getUiAutomation(if (phase in setOf("ui-live-read", "pc-live-draft", "ui-reviewed-write")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
             check(qemu == "1") { "Refusing a physical device" }
             val store = SecretStore(targetContext)
             val marker = "device-smoke-not-a-secret"
             when (phase) {
+                "ui-reviewed-write" -> {
+                    check(reviewedTest) { "Requires the user's explicit Banana 1g lunch test approval" }
+                    check(store.get("write_intent").isBlank()) { "Never replay an uncertain test write; verify and acknowledge manually" }
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val ui = FatUi(targetContext)
+                    val engine = UiMealEngine(store, ui)
+                    engine.prepare(Meals.parse("/meal ${java.time.LocalDate.now()} lunch banana=1"))
+                    val review = engine.pick(1, 1)
+                    val draft = JSONObject(store.get("ui_pending"))
+                    check(draft.getString("preview").startsWith("Banana: 1 g"))
+                    check(review.contains("/confirm"))
+                    store.put("ui_test_previous", store.get("ui_test_receipt"))
+                    store.put("ui_test_receipt", draft.toString())
+                    engine.confirm(draft.getString("nonce"))
+                    check(store.get("write_intent").isNotBlank())
+                    SystemClock.sleep(1000)
+                    ui.diary()
+                    result.putString("stream", "PASS: explicitly reviewed Banana 1g lunch test clicked SAVE exactly once; uncertain-write lock retained; inspect and remove ONLY this test entry before clearing receipt\n")
+                }
+                "ui-live-read", "pc-live-draft" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val ui = FatUi(targetContext)
+                    val summary = ui.today()
+                    check(summary.contains("ккал"))
+                    val meal = if (phase == "pc-live-draft") {
+                        val file = File(targetContext.filesDir, "test-config.json")
+                        val config = try { JSONObject(file.readText()) } finally { file.delete() }
+                        check(!config.has("bot_token"))
+                        PcBrain(config, Http.client()).parse("Lunch: banana 100g")
+                    } else Meals.parse("/meal ${java.time.LocalDate.now()} lunch banana=100")
+                    val engine = UiMealEngine(store, ui)
+                    check(engine.prepare(meal).contains("/pick"))
+                    check(engine.pick(1, 1).contains("/confirm"))
+                    check(ui.preview().contains("100"))
+                    check(store.get("write_intent").isBlank())
+                    check(engine.cancel().contains("отменён"))
+                    check(store.get("ui_pending").isBlank())
+                    result.putString("stream", "PASS: actual FatSecret Accessibility diary read, search, product selection, grams=100, reviewed preview and cancellation; SAVE never clicked; no diary write\n")
+                }
                 "read" -> {
                     check(store.get("device_smoke") == marker) { "Keystore decrypt after force-stop failed" }
                     targetContext.getSharedPreferences("agent_private", 0).edit().remove("device_smoke").commit()
@@ -111,6 +158,7 @@ class DeviceSmoke : Instrumentation() {
                         click(activity, "Назад")
                         runOnMainSync { check(secure(activity)) }
                         click(activity, "FatSecret")
+                        click(activity, "Экспериментальный developer API")
                         click(activity, targetContext.getString(R.string.fs_open_login))
                         runOnMainSync {
                             val error = views(activity.window.decorView).filterIsInstance<TextView>()
@@ -153,6 +201,7 @@ class DeviceSmoke : Instrumentation() {
                     val activity = launch()
                     try {
                         click(activity, "FatSecret")
+                        click(activity, "Экспериментальный developer API")
                         runOnMainSync {
                             val fields = views(activity.window.decorView).filterIsInstance<EditText>()
                             fields[0].setText(config.getString("fs_key")); fields[1].setText(config.getString("fs_secret"))

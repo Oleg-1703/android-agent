@@ -1,0 +1,76 @@
+"""Transport and isolation checks. No subscription calls are made by these tests."""
+import http.client
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+import brain
+
+
+class BrainTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.server = brain.BrainServer(("127.0.0.1", 0), {"pairing_token": "fixture-token" * 4}, "unused", Path(self.temp.name))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.temp.cleanup()
+
+    def post(self, body, token="fixture-token" * 4, path="/v1/meal"):
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=3)
+        connection.request("POST", path, json.dumps(body), {"Authorization": "Bearer " + token})
+        response = connection.getresponse()
+        status, value = response.status, json.loads(response.read())
+        connection.close()
+        return status, value
+
+    @patch.object(brain, "parse_meal")
+    def test_unauthorized_never_runs_model(self, model):
+        self.assertEqual(self.post({"text": "x", "date": "2026-11-15"}, token="wrong")[0], 401)
+        model.assert_not_called()
+
+    @patch.object(brain, "parse_meal")
+    def test_invalid_requests_never_run_model(self, model):
+        for body in ({}, {"text": "x" * 4001, "date": "2026-11-15"}, {"text": "x", "date": "yesterday"}):
+            self.assertEqual(self.post(body)[0], 400)
+        model.assert_not_called()
+
+    @patch.object(brain, "parse_meal")
+    def test_concurrent_request_does_not_start_second_model(self, model):
+        with self.server.busy:
+            self.assertEqual(self.post({"text": "banana 100g lunch", "date": "2026-11-15"})[0], 429)
+        model.assert_not_called()
+
+    @patch.object(brain, "parse_meal", side_effect=RuntimeError("private provider error"))
+    def test_provider_error_is_private_and_lock_is_released(self, model):
+        status, result = self.post({"text": "banana 100g lunch", "date": "2026-11-15"})
+        self.assertEqual(status, 503)
+        self.assertNotIn("private", json.dumps(result))
+        self.assertTrue(self.server.busy.acquire(blocking=False))
+        self.server.busy.release()
+
+    @patch.object(brain.subprocess, "run")
+    def test_cli_has_no_tools_no_persistence_and_no_paid_auth(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps({"structured_output": {"question": "Укажи вес"}})
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "private", "OPENAI_API_KEY": "private"}):
+            brain.parse_meal("banana", "2026-11-15", "claude", Path(self.temp.name))
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        for flag in ("--safe-mode", "--restricted", "--strict-mcp-config", "--no-session-persistence"):
+            self.assertIn(flag, command)
+        self.assertNotIn("ANTHROPIC_API_KEY", run.call_args.kwargs["env"])
+        self.assertNotIn("OPENAI_API_KEY", run.call_args.kwargs["env"])
+        self.assertNotIn("shell", run.call_args.kwargs)
+
+
+if __name__ == "__main__":
+    unittest.main()

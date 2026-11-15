@@ -26,7 +26,10 @@ Choose the next roadmap task independently, continue after the first commit, and
 - `Meals`, `MealEngine`, `Portions`: strict command validation, candidate selection, reviewed quantities and durable no-replay write/verification state.
 - `OAuth1`, `FatSecretApi` / `DiaryApi`: signed official existing-account OAuth and food/diary calls.
 - `AiMeals`: untrusted structured extraction/transcription only, never direct actions.
-- `FatAccessibilityService`, `Automation`: local package-restricted primitives; no validated FatSecret UI recipe.
+- `FatAccessibilityService`, `FatUi`, `UiMealEngine`: fixed package-restricted screen workflow, explicit product/portion confirmation and shared uncertain-write journal. Runtime evidence is tracked in docs/PROGRESS.md.
+- `PcBrain`, `pc/brain.py`: paired HTTPS transport to the user's PC; tool-less Claude Code subscription parser. No paid API auth or second Telegram poller. PC must remain on.
 - `app/src/test`: JVM contracts/state/security regression tests. `app/src/androidTest`: dependency-free disposable-device smoke runner; never run against configured personal devices.
 
 Never remove the HTTP 503 no-replay interceptor or pre-write state commit without equivalent regression coverage. Do not add automatic create retries, automatic uncertain-write acknowledgement, broad app permissions, or LLM-driven confirmation.
+
+The user logged into real FatSecret on emulator-5556 on 2026-11-15. Preserve this AVD/account data. No physical Realme is attached. Diary writes require reviewed confirmation. Never inject synthetic meals into the personal account without that confirmation.

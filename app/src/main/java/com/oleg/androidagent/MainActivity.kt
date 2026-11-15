@@ -46,7 +46,8 @@ class MainActivity : Activity() {
         val state: String = "", val status: String = "", val contact: String = "", val message: String = "",
         val username: String = "", val writeIntent: Boolean = false,
         val tokenSaved: Boolean = false, val tokenValid: Boolean = false, val chatOk: Boolean = false,
-        val fsKeys: Boolean = false, val fsToken: Boolean = false, val aiConsent: Boolean = false, val aiKey: Boolean = false
+        val fsKeys: Boolean = false, val fsToken: Boolean = false, val aiConsent: Boolean = false, val aiKey: Boolean = false,
+        val screenReady: Boolean = false, val pcReady: Boolean = false
     )
     private class Outcome(val tone: Ui.Tone, val text: String, val after: (() -> Unit)? = null)
 
@@ -104,6 +105,9 @@ class MainActivity : Activity() {
     private lateinit var aiModel: Ui.Field
     private lateinit var aiSpeech: Ui.Field
     private lateinit var aiResult: TextView
+    private lateinit var pcUrl: Ui.Field
+    private lateinit var pcPairing: Ui.Field
+    private lateinit var pcConsent: CheckBox
     // help
     private lateinit var helpResult: TextView
 
@@ -477,6 +481,22 @@ class MainActivity : Activity() {
     private fun fatSecretPage(config: JSONObject?): View = with(ui) {
         val page = column()
         pageTitle(page, R.string.fs_title, R.string.fs_intro)
+        val screen = card()
+        screen.add(heading("Управление приложением"))
+        screen.add(body("Войди в обычный FatSecret и включи специальные возможности Android Agent. Developer-ключи и отдельный вход через сайт не нужны. Во время работы телефон должен быть разблокирован."), 8)
+        screen.add(button("Открыть FatSecret") { openFatSecret() }, 12)
+        screen.add(button("Включить специальные возможности", Ui.Style.SECONDARY) { launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, 10)
+        val screenResult = resultView()
+        screen.add(button("Прочитать сводку дневника", Ui.Style.SECONDARY) {
+            background(screenResult, R.string.fs_screen_failed) { Outcome(Ui.Tone.OK, FatUi(this@MainActivity).today()) }
+        }, 10)
+        screen.add(screenResult, 8)
+        page.add(screen, 14)
+        val legacy = column().apply { visibility = View.GONE }
+        page.add(button("Экспериментальный developer API", Ui.Style.SECONDARY) {
+            legacy.visibility = if (legacy.visibility == View.GONE) View.VISIBLE else View.GONE
+        }, 14)
+        page.add(legacy)
         val keys = card()
         keys.add(heading(getString(R.string.fs_keys_title)))
         keys.add(body(getString(R.string.fs_get_keys_help)), 6)
@@ -488,7 +508,7 @@ class MainActivity : Activity() {
         fsSecret = field(getString(R.string.fs_secret), secret = true)
         keys.add(fsKey.box, 12); keys.add(fsSecret.box, 14)
         keys.add(button(getString(R.string.fs_save_keys)) { saveFatSecret() }, 16)
-        page.add(keys, 14)
+        legacy.add(keys, 14)
 
         val auth = card()
         auth.add(heading(getString(R.string.fs_auth_title)))
@@ -503,13 +523,13 @@ class MainActivity : Activity() {
         auth.add(button(getString(R.string.fs_complete)) { fsComplete() }, 10)
         auth.add(body(getString(R.string.fs_step3)), 16)
         auth.add(button(getString(R.string.fs_read), Ui.Style.SECONDARY) { fsRead() }, 8)
-        page.add(auth, 14)
+        legacy.add(auth, 14)
 
         val off = card()
         off.add(heading(getString(R.string.fs_disc_title)))
         off.add(body(getString(R.string.fs_disc_body)), 6)
         off.add(button(getString(R.string.fs_disconnect), Ui.Style.DANGER) { confirmDisconnect() }, 12)
-        page.add(off, 14)
+        legacy.add(off, 14)
         page
     }
 
@@ -600,7 +620,45 @@ class MainActivity : Activity() {
     private fun aiPage(config: JSONObject?): View = with(ui) {
         val page = column()
         pageTitle(page, R.string.ai_title, R.string.ai_intro)
+        val pc = card()
+        pc.add(heading("ИИ через твою подписку на ПК"))
+        pc.add(body("API-ключ не нужен. Используется вход в Claude Code на твоём ПК. ПК и помощник должны быть включены. Текст еды отправляется на твой ПК и в Claude; запись появится только после подтверждения. Лимиты подписки сохраняются."), 8)
+        pcUrl = field("HTTPS-адрес помощника на ПК")
+        pcUrl.edit.setText(config?.optString("pc_url").orEmpty())
+        pcPairing = field("Код сопряжения с ПК", secret = true)
+        pcPairing.edit.hint = if (config?.optString("pc_pairing").orEmpty().isNotEmpty()) "Код сохранён" else "Из настроек помощника на ПК"
+        pcConsent = CheckBox(this@MainActivity).apply {
+            text = getString(R.string.pc_consent)
+            isChecked = config?.optBoolean("pc_consent") ?: false
+            setTextColor(color(R.color.navy)); minHeight = dp(48)
+        }
+        pc.add(pcUrl.box, 12); pc.add(pcPairing.box, 12); pc.add(pcConsent, 12)
+        val pcResult = resultView()
+        pc.add(button("Сохранить подключение ПК") {
+            try {
+                val current = store.config()
+                val url = pcUrl.edit.text.toString().trim()
+                val token = pcPairing.edit.text.toString().trim().ifBlank { current.optString("pc_pairing") }
+                if (pcConsent.isChecked) {
+                    PcBrain.endpoint(url)
+                    require(token.length in 32..200 && token.all { it.isLetterOrDigit() || it in "_-" }) { "Введи код сопряжения из помощника на ПК." }
+                }
+                current.put("pc_url", url).put("pc_pairing", token).put("pc_consent", pcConsent.isChecked)
+                stopService(Intent(this@MainActivity, AgentService::class.java))
+                store.put("config", current.toString())
+                pcPairing.edit.setText("")
+                show(pcResult, Ui.Tone.OK, "Сохранено. Запусти агента на главном экране.")
+            } catch (e: IllegalArgumentException) {
+                show(pcResult, Ui.Tone.ERR, e.message ?: "Проверь настройки ПК.")
+            }
+        }, 12)
+        pc.add(pcResult, 8)
+        page.add(pc, 14)
         val c = card()
+        c.visibility = View.GONE
+        page.add(button("Экспериментальный платный API", Ui.Style.SECONDARY) {
+            c.visibility = if (c.visibility == View.GONE) View.VISIBLE else View.GONE
+        }, 14)
         consent = CheckBox(this@MainActivity).apply {
             text = getString(R.string.ai_consent); isChecked = config?.optBoolean("ai_consent") ?: false
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f); setTextColor(color(R.color.navy)); minHeight = dp(48)
@@ -765,7 +823,9 @@ class MainActivity : Activity() {
                 chatOk = c.optString("chat_id").toLongOrNull()?.let { it > 0 } == true,
                 fsKeys = c.optString("fs_key").isNotBlank() && c.optString("fs_secret").isNotBlank(),
                 fsToken = c.optString("fs_token").isNotBlank(),
-                aiConsent = c.optBoolean("ai_consent"), aiKey = c.optString("llm_key").isNotBlank()
+                aiConsent = c.optBoolean("ai_consent"), aiKey = c.optString("llm_key").isNotBlank(),
+                screenReady = FatAccessibilityService.instance != null,
+                pcReady = c.optBoolean("pc_consent") && c.optString("pc_pairing").isNotBlank() && c.optString("pc_url").isNotBlank()
             )
         } catch (_: Exception) { Snap(configOk = false, active = active) }
     }
@@ -820,12 +880,11 @@ class MainActivity : Activity() {
         val tg = s.tokenValid && s.chatOk
         setPill(rowPill[0], if (tg) Ui.Tone.OK else Ui.Tone.WARN, if (tg) R.string.pill_ready else R.string.pill_needed)
         rowDetail[0].text = getString(if (tg) R.string.row_tg_ready else R.string.row_tg_needed)
-        val fsTone = if (s.fsToken) Ui.Tone.OK else if (s.fsKeys) Ui.Tone.WARN else Ui.Tone.IDLE
-        setPill(rowPill[1], fsTone, if (s.fsToken) R.string.pill_token else if (s.fsKeys) R.string.pill_login else R.string.pill_optional)
-        rowDetail[1].text = getString(if (s.fsToken) R.string.row_fs_token else if (s.fsKeys) R.string.row_fs_keys else R.string.row_fs_none)
-        val ai = s.aiConsent && s.aiKey
+        setPill(rowPill[1], if (s.screenReady) Ui.Tone.OK else Ui.Tone.WARN, if (s.screenReady) R.string.pill_ready else R.string.pill_needed)
+        rowDetail[1].text = getString(if (s.screenReady) R.string.row_screen_ready else R.string.row_screen_needed)
+        val ai = s.pcReady
         setPill(rowPill[2], if (ai) Ui.Tone.OK else Ui.Tone.IDLE, if (ai) R.string.pill_on else R.string.pill_off)
-        rowDetail[2].text = getString(if (ai) R.string.row_ai_on else R.string.row_ai_off)
+        rowDetail[2].text = getString(if (ai) R.string.row_pc_on else R.string.row_pc_off)
         setupSummary.text = getString(if (tg) R.string.setup_done else R.string.setup_todo)
 
         fsStatus.text = getString(if (s.fsToken) R.string.fs_status_token else if (s.fsKeys) R.string.fs_status_keys else R.string.fs_status_none)

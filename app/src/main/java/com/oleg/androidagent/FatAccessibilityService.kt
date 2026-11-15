@@ -5,6 +5,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 class FatAccessibilityService : AccessibilityService() {
+    private val incarnation = java.util.UUID.randomUUID().toString()
+    @Volatile private var windowEpoch = 0L
+    val screenStamp: String get() = "$incarnation:$windowEpoch"
     companion object {
         const val FATSECRET_PACKAGE = "com.fatsecret.android"
         @Volatile var instance: FatAccessibilityService? = null
@@ -21,7 +24,9 @@ class FatAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) windowEpoch++
+    }
     override fun onInterrupt() {}
 
     /** Local-only bounded inspection. No sensitive screen data is logged or uploaded. */

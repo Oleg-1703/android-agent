@@ -64,18 +64,10 @@
     <string name="setup_todo">Для запуска нужен только Telegram. FatSecret и ИИ необязательны.</string>
     <string name="pill_ready">Готово</string>
     <string name="pill_needed">Нужно</string>
-    <string name="pill_token">Токен есть</string>
-    <string name="pill_login">Нужен вход</string>
-    <string name="pill_optional">По желанию</string>
     <string name="pill_on">Включён</string>
     <string name="pill_off">Выключен</string>
     <string name="row_tg_ready">Токен и ID сохранены</string>
     <string name="row_tg_needed">Нужны токен бота и ваш числовой ID</string>
-    <string name="row_fs_token">Токен сохранён локально, доступ проверьте чтением дневника</string>
-    <string name="row_fs_keys">Ключи сохранены, нужно войти в аккаунт</string>
-    <string name="row_fs_none">Нужен для записи в дневник</string>
-    <string name="row_ai_on">Распознавание текста, фото и голоса включено</string>
-    <string name="row_ai_off">Работают только команды /meal</string>
 
     <string name="how_title">С чего начать</string>
     <string name="how_1">1. Создайте бота у BotFather в Telegram и вставьте его токен на вкладке Telegram вместе со своим числовым ID.</string>
@@ -119,7 +111,13 @@
     <string name="fs_title">FatSecret</string>
     <string name="fs_get_keys">Получить developer-ключи</string>
     <string name="fs_get_keys_help">Ключи выдаёт FatSecret после регистрации приложения. У Basic есть бесплатный доступ с ограничениями; поиск продуктов - по базе США. Вход в свой дневник выполняется отдельно ниже.</string>
-    <string name="fs_intro">Нужен только для записи в дневник. Вход идёт через официальную страницу FatSecret в браузере, пароль в приложение не вводится.</string>
+    <string name="fs_intro">Агент управляет обычным приложением FatSecret через специальные возможности Android. Developer-доступ не нужен.</string>
+    <string name="fs_screen_failed">Не удалось прочитать экран. Разблокируй телефон, включи специальные возможности Android Agent и проверь вход в FatSecret.</string>
+    <string name="pc_consent">Разрешаю отправлять текст еды на мой ПК и в Claude</string>
+    <string name="row_screen_ready">Специальные возможности включены. Войди в FatSecret и разблокируй экран.</string>
+    <string name="row_screen_needed">Включи специальные возможности Android Agent. Developer-ключи не нужны.</string>
+    <string name="row_pc_on">ПК подключён в настройках. Для ИИ оставь помощник и ПК включёнными.</string>
+    <string name="row_pc_off">ИИ через подписку на ПК. Без него доступна команда /meal.</string>
     <string name="fs_keys_title">Ключи разработчика</string>
     <string name="fs_key">Consumer Key</string>
     <string name="fs_secret">Consumer Secret</string>
@@ -156,7 +154,7 @@
 
     <!-- ai -->
     <string name="ai_title">ИИ (по желанию)</string>
-    <string name="ai_intro">Без ИИ работают команды /meal. С ИИ бот разбирает свободный текст, фото и голос. Ничего не отправляется провайдеру, пока согласие выключено, а платные запросы идут только в ответ на ваши сообщения боту.</string>
+    <string name="ai_intro">Свободный текст через текущую подписку Claude на ПК. Без ИИ доступна команда /meal. Фото и голос в этом режиме пока не подключены.</string>
     <string name="ai_consent">Разрешаю отправлять текст, фото и голос из моего чата выбранному ИИ-провайдеру (может быть платно)</string>
     <string name="ai_url">Адрес API (OpenAI-совместимый, только HTTPS)</string>
     <string name="ai_key">Ключ API</string>

@@ -70,7 +70,7 @@ class AgentService : Service() {
             val scope = MessageDigest.getInstance("SHA-256").digest(token.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
             val offsetKey = "offset_$scope"
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
-            val commands = AgentCommands(store, config, FatSecretApi(config, client), client)
+            val commands = AgentCommands(store, config, FatSecretApi(config, client), client, FatUi(this))
             var failures = 0
             var firstPoll = true
             while (running && !Thread.currentThread().isInterrupted) {
@@ -90,7 +90,7 @@ class AgentService : Service() {
                     status("listening", "На связи. Открой бота в Telegram и отправь /help.")
                     if (firstPoll) {
                         firstPoll = false
-                        telegram.send(owner, "Android Agent запущен на Android и принимает команды.\nНажми «Помощь», чтобы начать. FatSecret и ИИ настраиваются отдельно.")
+                        telegram.send(owner, "Android Agent запущен. Управление FatSecret через экран, без developer-ключей.\nНажми «Помощь», чтобы начать.")
                         store.put("last_delivery", System.currentTimeMillis().toString())
                     }
                     for (update in updates) {
