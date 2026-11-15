@@ -64,10 +64,16 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Boot disposable Android 11 emulator
         run: |
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
+          echo "ANDROID_USER_HOME=$ANDROID_USER_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -accel-check
-          echo no | avdmanager create avd --name Agent_API30 --package 'system-images;android-30;default;x86_64' --device pixel_2
+          echo no | avdmanager create avd --name Agent_API30 --path "$ANDROID_AVD_HOME/Agent_API30.avd" --package 'system-images;android-30;default;x86_64' --device pixel_2
+          test -f "$ANDROID_AVD_HOME/Agent_API30.ini"
           "$ANDROID_HOME/emulator/emulator" -avd Agent_API30 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2 -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
           emulator_pid=$!
           sleep 5
