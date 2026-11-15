@@ -3,7 +3,7 @@ set -euo pipefail
 # Run only on a clean disposable API 30 emulator, never a configured personal phone.
 : "${ANDROID_HOME:?Set ANDROID_HOME to the Android SDK}"
 adb="$ANDROID_HOME/platform-tools/adb"
-"$adb" wait-for-device
+timeout 120 "$adb" wait-for-device || { echo "Emulator did not connect to ADB within 120 seconds" >&2; exit 1; }
 [[ $("$adb" shell getprop ro.kernel.qemu | tr -d '\r') == 1 ]] || { echo "Refusing a non-emulator device" >&2; exit 1; }
 [[ $("$adb" shell getprop ro.build.version.sdk | tr -d '\r') == 30 ]] || { echo "Use a clean API 30 emulator" >&2; exit 1; }
 for ((attempt=0; attempt<90; attempt++)); do

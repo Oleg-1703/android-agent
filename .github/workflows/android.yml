@@ -1,6 +1,7 @@
 name: Android debug build
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 jobs:
@@ -65,13 +66,26 @@ jobs:
         run: |
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
           echo no | avdmanager create avd --name Agent_API30 --package 'system-images;android-30;default;x86_64' --device pixel_2
-          "$ANDROID_HOME/emulator/emulator" -avd Agent_API30 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 -cores 2 -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -avd Agent_API30 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2 -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          emulator_pid=$!
+          sleep 5
+          if ! kill -0 "$emulator_pid"; then cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
       - name: Verify runtime, Russian UI and protected diagnostics
-        run: ./scripts/device-smoke.sh
+        run: |
+          if ! timeout 480 ./scripts/device-smoke.sh; then
+            tail -n 120 "$RUNNER_TEMP/emulator.log"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: android-agent-emulator-screenshots
           if-no-files-found: error
           path: .local/qa/*.png
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-agent-emulator-failure
+          path: ${{ runner.temp }}/emulator.log
