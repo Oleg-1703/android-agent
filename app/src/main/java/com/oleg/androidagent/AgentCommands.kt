@@ -1,0 +1,91 @@
+package com.oleg.androidagent
+
+import okhttp3.OkHttpClient
+import org.json.JSONObject
+import java.time.LocalDate
+import java.util.Locale
+
+data class CommandReply(val text: String, val stop: Boolean = false)
+
+class AgentCommands(
+    private val store: StateStore,
+    private val config: JSONObject,
+    private val diary: DiaryApi,
+    private val client: OkHttpClient
+) {
+    private val engine = MealEngine(store, diary)
+    private fun requireDiary() {
+        require(config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()) {
+            "Telegram работает. Для дневника открой приложение на телефоне: FatSecret → подключить существующий аккаунт. ИИ для просмотра дневника не нужен."
+        }
+    }
+    fun handle(message: JSONObject, telegram: TelegramApi): CommandReply {
+        val text = message.optString("text", message.optString("caption")).trim()
+        val command = text.substringBefore(' ').substringBefore('@').lowercase(Locale.ROOT)
+        val natural = text.lowercase(Locale.ROOT).trimEnd('?', '.', '!')
+        when {
+            command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> return CommandReply(
+                "Я на связи. Управление идёт прямо с Android.\n\n" +
+                    "/today - дневник за сегодня\n/status - состояние\n/cancel - отменить подготовленную еду\n/stop - остановить агента\n\n" +
+                    "Добавить еду без ИИ:\n/meal ${LocalDate.now()} lunch рис варёный=150;курица=200\n" +
+                    "Приём пищи: breakfast (завтрак), lunch (обед), dinner (ужин), other (перекус).\n" +
+                    "Я предложу продукты для /pick, затем попрошу /confirm с кодом. Без подтверждения запись не появится. " +
+                    "Фото и голос доступны после отдельной настройки ИИ на телефоне."
+            )
+            command == "/status" || natural == "статус" -> return CommandReply(
+                "Агент работает. " + (if (store.get("write_intent").isNotBlank())
+                    "Есть непроверенная запись: проверь дневник и сними блокировку в приложении. " else "Непроверенных записей нет. ") +
+                    (if (config.optString("fs_token").isBlank()) "FatSecret ещё не подключён. " else "FatSecret подключён. ") + store.get("last_result")
+            )
+            command == "/stop" -> return CommandReply("Агент остановлен. Запустить снова можно в приложении на телефоне.", stop = true)
+            command == "/cancel" || natural == "отмена" -> return CommandReply(engine.cancel())
+            command == "/today" || natural in setOf("сегодня", "дневник", "что я сегодня ел", "что я ел сегодня") -> {
+                requireDiary()
+                val today = LocalDate.now().toString()
+                val entries = diary.entries(today)
+                if (entries.isEmpty()) return CommandReply("В дневнике за $today пока нет записей.")
+                val lines = entries.take(60).map { entry ->
+                    val name = entry.optString("food_entry_name", entry.optString("food_name", "Продукт")).take(120)
+                    val calories = entry.optString("calories").takeIf { it.toBigDecimalOrNull() != null }
+                    "• $name" + (calories?.let { " - $it ккал" } ?: "")
+                }
+                return CommandReply("Дневник за $today (${entries.size}):\n" + lines.joinToString("\n") +
+                    if (entries.size > 60) "\nОстальные записи - в FatSecret." else "")
+            }
+            command == "/pick" -> {
+                requireDiary()
+                val parts = text.split(Regex("\\s+"))
+                require(parts.size == 3 && parts[1].toIntOrNull() != null && parts[2].toIntOrNull() != null) { "Выбери продукт: /pick НОМЕР_ПРОДУКТА НОМЕР_ВАРИАНТА, например /pick 1 2" }
+                return CommandReply(engine.pick(parts[1].toInt(), parts[2].toInt()))
+            }
+            command == "/confirm" -> {
+                requireDiary()
+                return CommandReply(engine.confirm(text.substringAfter(' ', "").trim()))
+            }
+            command == "/meal" -> {
+                requireDiary()
+                return CommandReply(engine.prepare(Meals.parse("/meal " + text.substringAfter(' ', ""))))
+            }
+            text.startsWith("/") -> return CommandReply("Не знаю эту команду. Нажми «Помощь» или отправь /help.")
+        }
+        requireDiary()
+        require(config.optBoolean("ai_consent")) {
+            "Фото, голос и свободный текст требуют отдельной настройки ИИ в приложении. Без ИИ можно так:\n/meal ${LocalDate.now()} lunch рис варёный=150"
+        }
+        val ai = AiMeals(config, client)
+        val voice = message.optJSONObject("voice")
+        if (voice != null) {
+            require(voice.optInt("duration") in 1..120) { "Голосовое сообщение - до 120 секунд." }
+            val bytes = telegram.download(voice.getString("file_id"), voice.optLong("file_size"), 8_000_000)
+            return CommandReply(engine.prepare(ai.parse(ai.transcribe(bytes))))
+        }
+        val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
+        if (message.has("photo")) {
+            require(photo != null) { "Размер фотографии - до 4 МБ." }
+            val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
+            return CommandReply(engine.prepare(ai.parse(text, bytes)))
+        }
+        require(text.isNotBlank()) { "Пришли текст, фото с весом продуктов или голосовое сообщение." }
+        return CommandReply(engine.prepare(ai.parse(text)))
+    }
+}

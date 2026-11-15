@@ -91,12 +91,12 @@ class CoreTest {
     }
     @Test fun successfulWriteIsVerifiedAndConsumed() {
         val s=MemoryStore();val api=FakeDiary();val(e,code)=ready(s,api)
-        assertTrue(e.confirm(code).contains("Saved and verified 1"));assertEquals(1,api.writes);assertEquals("",s.get("write_intent"))
+        assertTrue(e.confirm(code).contains("Сохранено и проверено 1"));assertEquals(1,api.writes);assertEquals("",s.get("write_intent"))
         assertThrows(IllegalArgumentException::class.java) {e.confirm(code)};assertEquals(1,api.writes)
     }
     @Test fun timeoutAfterServerCommitCannotBeRetriedEvenAfterRestart() {
         val s=MemoryStore();val api=FakeDiary();val(e,code)=ready(s,api);api.failAfterSave=true
-        assertTrue(e.confirm(code).contains("may have been saved"));assertEquals(1,api.writes);assertTrue(s.get("write_intent").isNotBlank())
+        assertTrue(e.confirm(code).contains("мог сохраниться"));assertEquals(1,api.writes);assertTrue(s.get("write_intent").isNotBlank())
         val restarted=MealEngine(s,api)
         assertThrows(IllegalArgumentException::class.java) {restarted.confirm(code)}
         assertThrows(IllegalArgumentException::class.java) {restarted.prepare(Meals.parse("/meal 2026-11-12 lunch chicken=200"))}
@@ -117,7 +117,7 @@ class CoreTest {
     @Test fun duplicateRiskIsShown() {
         val s=MemoryStore();val api=FakeDiary();val(e,code)=ready(s,api);e.confirm(code)
         e.prepare(Meals.parse("/meal 2026-11-12 lunch chicken=200"))
-        assertTrue(e.pick(1,1).contains("WARNING"));assertEquals(1,api.writes)
+        assertTrue(e.pick(1,1).contains("ВНИМАНИЕ"));assertEquals(1,api.writes)
     }
     @Test fun partialMealStopsAfterUncertainFirstWrite() {
         val s=MemoryStore();val api=FakeDiary();val e=MealEngine(s,api)

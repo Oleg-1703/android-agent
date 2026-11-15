@@ -46,3 +46,14 @@ Install the PR's debug APK on Realme and follow docs/INSTALL_RU.md. Enter creden
 
 ## Distribution notices
 Inspected debugRuntimeClasspath and packaged resources. Added Apache-2.0 and MPL-2.0 license texts plus runtime dependency notices to APK assets; retained OkHttp's original Public Suffix List NOTICE. No agent source was imported. This packaging-only follow-up does not change runtime behavior.
+
+## 15.11.2026 - доведение на локальном ПК
+
+- Checkout: `projects/android-agent`, ветка `feat/desktop-ready` от незамерженного PR #6. Прочитан PR #7; исходный отчёт сохранён в `docs/testing/realme6pro-android11-2026-11-15.md`.
+- Установлены JDK 17, SDK 35, Android Emulator и AOSP Android 11 / API 30 x86_64. WHPX работает. Инструменты вне Git; сборка через junction на этот же checkout обходит проблему кириллицы в Windows JVM classpath.
+- Новый русский UI: отдельные вкладки, карточка состояния, проверка соединения, кнопка нужного бота, подсказки, безопасная диагностика. Основные действия адаптированы под узкий экран и крупный шрифт. Настройки приложения ведут прямо на карточку Android Agent.
+- Telegram получает отдельную проверку webhook/токена, конкретные ошибки 401/403/404/409, ответ при пропуске устаревшего запроса. `/stop` отвечает до остановки. `/today` и вопрос о сегодняшней еде работают без ИИ после подключения дневника. Сохранены ограничения чата, шифрование и запрет повторной неопределённой записи.
+- Локально: 36 JVM-тестов, lint без ошибок/предупреждений, APK и test APK. Runtime/Keystore/process restart/UI прошли на обычном экране и при 320 dp / шрифте 130%. Настоящие getMe/getWebhookInfo/getUpdates/sendMessage и остановка того же поллера прошли из Android; live-конфигурация удалена после проверки.
+- Независимое read-only ревью: исправлена некорректная схема отдельной instrumentation-фазы остановки, добавлена очистка live-конфигурации и корректная подсказка при быстром Stop/Start. Продуктовые дефекты из узкого экрана проверены повторно.
+- Олег подтвердил: developer-доступа FatSecret пока нет. Реальные OAuth/дневник/записи, фото/голос, Play Protect и фон Realme не проверены. Модели и платные API не подключались; новые записи еды не создавались. Полная приёмка MVP остаётся открытой.
+- [Подробные доказательства и границы](testing/desktop-2026-11-15.md). Добавлены воспроизводимые Windows-команды и CI Android 11 с обезличенными скриншотами. Публикация PR и удалённые проверки выполняются после локальных тестов.

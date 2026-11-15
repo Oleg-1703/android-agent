@@ -17,6 +17,13 @@ runner=com.oleg.androidagent.test/com.oleg.androidagent.DeviceSmoke
 result=$("$adb" shell am instrument -r -w -e phase write "$runner")
 printf '%s\n' "$result"
 [[ "$result" == *'INSTRUMENTATION_CODE: -1'* && "$result" == *'PASS:'* ]]
+result=$("$adb" shell am instrument -r -w -e phase ui "$runner")
+printf '%s\n' "$result"
+[[ "$result" == *'INSTRUMENTATION_CODE: -1'* && "$result" == *'PASS:'* ]]
+mkdir -p .local/qa
+for name in home telegram fatsecret ai help diagnostics; do
+    "$adb" exec-out run-as com.oleg.androidagent cat "cache/$name.png" > ".local/qa/$name.png"
+done
 "$adb" shell am force-stop com.oleg.androidagent
 result=$("$adb" shell am instrument -r -w -e phase read "$runner")
 printf '%s\n' "$result"

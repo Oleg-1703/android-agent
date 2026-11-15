@@ -5,6 +5,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.json.JSONArray
 
 object TelegramAccess {
     fun allowed(message: JSONObject, owner: Long): Boolean = owner > 0 &&
@@ -22,12 +23,18 @@ class TelegramApi(private val token: String, private val client: OkHttpClient) {
         if (!json.optBoolean("ok")) throw ApiFailure(json.optInt("error_code"), json.optJSONObject("parameters")?.optLong("retry_after") ?: 0)
         return json
     }
-    fun updates(offset: Long): List<JSONObject> = call("getUpdates", mapOf(
-        "offset" to offset.toString(), "timeout" to "45", "limit" to "20", "allowed_updates" to "[\"message\"]"
+    fun identity(): JSONObject = call("getMe", emptyMap()).getJSONObject("result")
+    fun webhookConfigured(): Boolean = call("getWebhookInfo", emptyMap()).getJSONObject("result").optString("url").isNotBlank()
+    fun updates(offset: Long, timeout: Int = 45): List<JSONObject> = call("getUpdates", mapOf(
+        "offset" to offset.toString(), "timeout" to timeout.coerceIn(0, 45).toString(), "limit" to "20", "allowed_updates" to "[\"message\"]"
     )).objects("result")
     fun send(chat: Long, text: String) {
         text.chunked(3500).forEach { chunk ->
-            call("sendMessage", mapOf("chat_id" to chat.toString(), "text" to chunk))
+            val keyboard = JSONObject().put("keyboard", JSONArray()
+                .put(JSONArray().put("Сегодня").put("Статус"))
+                .put(JSONArray().put("Помощь").put("Отмена")))
+                .put("resize_keyboard", true).put("input_field_placeholder", "Команда или описание еды")
+            call("sendMessage", mapOf("chat_id" to chat.toString(), "text" to chunk, "reply_markup" to keyboard.toString()))
         }
     }
     fun download(fileId: String, declaredSize: Long, maxBytes: Long): ByteArray {

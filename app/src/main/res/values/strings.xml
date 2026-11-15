@@ -1,1 +1,221 @@
-<resources><string name="accessibility_description">Inspect the active FatSecret screen locally for automation development.</string></resources>
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Локальная проверка экрана FatSecret для экспериментальной автоматизации.</string>
+
+    <string name="app_title">Агент дневника питания</string>
+    <string name="tab_home">Главная</string>
+    <string name="tab_telegram">Telegram</string>
+    <string name="tab_fatsecret">FatSecret</string>
+    <string name="tab_ai">ИИ</string>
+    <string name="tab_help">Помощь</string>
+    <string name="tab_selected">выбрана</string>
+    <string name="cancel">Отмена</string>
+    <string name="save">Сохранить</string>
+    <string name="working">Выполняю, подождите…</string>
+    <string name="wait_busy">Ещё выполняется предыдущая операция. Подождите несколько секунд.</string>
+    <string name="save_failed">Не удалось сохранить настройки в зашифрованное хранилище. Попробуйте ещё раз.</string>
+    <string name="storage_broken">Зашифрованное хранилище недоступно. Очистите данные приложения в настройках Android и настройте всё заново.</string>
+    <string name="no_browser">Не найден браузер, чтобы открыть страницу входа.</string>
+
+    <!-- dashboard -->
+    <string name="state_label">Состояние агента</string>
+    <string name="state_listening">Работает</string>
+    <string name="state_starting">Запускается</string>
+    <string name="state_reconnecting">Переподключение</string>
+    <string name="state_error">Ошибка</string>
+    <string name="state_stopped">Остановлен</string>
+    <string name="state_stopping">Останавливается</string>
+    <string name="start_wait_stop">Предыдущий запуск ещё останавливается. Дождитесь состояния «Остановлен» и запустите снова.</string>
+    <string name="state_storage">Хранилище недоступно</string>
+    <string name="detail_listening">Агент слушает ваш личный чат с ботом в Telegram.</string>
+    <string name="detail_stopped">Агент не запущен. Нажмите «Запустить», когда настроите Telegram.</string>
+    <string name="detail_other">Ждём ответ от Telegram…</string>
+    <string name="error_hint">Проверьте токен и ID на вкладке Telegram и нажмите «Проверить соединение».</string>
+    <string name="strip">Агент: %1$s</string>
+    <string name="meta_bot">Бот: \@%1$s</string>
+    <string name="meta_contact">Последний контакт с Telegram: %1$s</string>
+    <string name="meta_message">Последнее сообщение: %1$s</string>
+    <string name="start">Запустить</string>
+    <string name="stop">Остановить</string>
+    <string name="open_bot">Открыть бота в Telegram</string>
+    <string name="open_bot_check">Сначала сохраните настройки и проверьте соединение на вкладке Telegram.</string>
+    <string name="start_already">Агент уже запущен.</string>
+    <string name="start_no_token">Токен бота не сохранён. Откройте вкладку Telegram, введите токен и нажмите «Сохранить».</string>
+    <string name="start_bad_token">Сохранённый токен имеет неверный формат. Введите токен заново на вкладке Telegram.</string>
+    <string name="start_no_chat">Не сохранён числовой ID чата. Укажите его на вкладке Telegram.</string>
+    <string name="start_requested">Запускаю агента. Состояние обновится в течение нескольких секунд.</string>
+    <string name="start_refused">Android не разрешил запуск службы. Откройте приложение на экране и повторите.</string>
+    <string name="stop_requested">Останавливаю агента…</string>
+
+    <string name="write_title">Запись в дневник под вопросом</string>
+    <string name="write_body">Прошлая запись могла пройти не до конца. Откройте FatSecret, проверьте дневник вручную и только потом снимите блокировку. Приложение ничего не повторяет и не удаляет само.</string>
+    <string name="write_ack">Я проверил дневник - снять блокировку</string>
+    <string name="write_stopping">Агент останавливается. Дождитесь остановки, проверьте дневник и нажмите кнопку ещё раз.</string>
+    <string name="write_dialog1_title">Сначала проверьте FatSecret</string>
+    <string name="write_dialog1_body">Это только снимает блокировку записи. Ничего не повторяется, не удаляется и не проверяется. Найдите частичные или дублирующиеся записи вручную и отправляйте боту только недостающие продукты новой командой.</string>
+    <string name="write_dialog1_ok">Дальше</string>
+    <string name="write_dialog2_title">Подтвердите ещё раз</string>
+    <string name="write_dialog2_body">Вы сами проверили дневник FatSecret и готовы продолжить?</string>
+    <string name="write_dialog2_ok">Да, я проверил дневник</string>
+    <string name="write_cleared">Блокировка снята. Запустите агента и отправьте только недостающие продукты.</string>
+
+    <string name="setup_title">Настройка</string>
+    <string name="setup_done">Telegram готов - агента можно запускать. FatSecret и ИИ необязательны.</string>
+    <string name="setup_todo">Для запуска нужен только Telegram. FatSecret и ИИ необязательны.</string>
+    <string name="pill_ready">Готово</string>
+    <string name="pill_needed">Нужно</string>
+    <string name="pill_token">Токен есть</string>
+    <string name="pill_login">Нужен вход</string>
+    <string name="pill_optional">По желанию</string>
+    <string name="pill_on">Включён</string>
+    <string name="pill_off">Выключен</string>
+    <string name="row_tg_ready">Токен и ID сохранены</string>
+    <string name="row_tg_needed">Нужны токен бота и ваш числовой ID</string>
+    <string name="row_fs_token">Токен сохранён локально, доступ проверьте чтением дневника</string>
+    <string name="row_fs_keys">Ключи сохранены, нужно войти в аккаунт</string>
+    <string name="row_fs_none">Нужен для записи в дневник</string>
+    <string name="row_ai_on">Распознавание текста, фото и голоса включено</string>
+    <string name="row_ai_off">Работают только команды /meal</string>
+
+    <string name="how_title">С чего начать</string>
+    <string name="how_1">1. Создайте бота у BotFather в Telegram и вставьте его токен на вкладке Telegram вместе со своим числовым ID.</string>
+    <string name="how_2">2. Нажмите «Проверить соединение», затем «Запустить» вверху этого экрана.</string>
+    <string name="how_3">3. Напишите боту /help из личного чата с аккаунта, чей ID указан. Бот отвечает и без FatSecret.</string>
+    <string name="how_4">4. Запись в дневник: подключите FatSecret, при желании - ИИ. Каждая запись проходит проверку в чате.</string>
+    <string name="diag_open">Диагностика для скриншота</string>
+
+    <!-- telegram -->
+    <string name="tg_title">Telegram</string>
+    <string name="tg_intro">Бот принимает сообщения только из вашего личного чата. Данные хранятся на телефоне в зашифрованном виде и не отправляются никому, кроме Telegram.</string>
+    <string name="tg_token">Токен бота</string>
+    <string name="tg_token_hint">Вставьте токен от BotFather</string>
+    <string name="tg_chat">Ваш числовой ID</string>
+    <string name="tg_chat_hint">Например 123456789</string>
+    <string name="tg_token_saved">Токен сохранён. Оставьте поле пустым, чтобы не менять его.</string>
+    <string name="tg_token_format">Токен выдаёт BotFather, вид: 123456:ABC-def…</string>
+    <string name="tg_token_ok">Формат токена верный.</string>
+    <string name="tg_token_bad">Неверный формат. Токен выглядит как 123456:ABC-def… и состоит из цифр, двоеточия и длинной строки.</string>
+    <string name="tg_chat_format">Только цифры: ID вашего личного чата с ботом.</string>
+    <string name="tg_chat_bad">ID - положительное целое число, например 123456789.</string>
+    <string name="tg_save_need_token">Нужен токен бота в правильном формате. Исправьте поле выше.</string>
+    <string name="tg_save_need_chat">Нужен положительный числовой ID. Исправьте поле выше.</string>
+    <string name="tg_saved">Сохранено. Агент остановлен, ожидающий разбор очищен. Нажмите «Проверить соединение», затем запустите агента на главной.</string>
+    <string name="tg_check">Проверить соединение</string>
+    <string name="tg_check_unsaved">Есть несохранённые изменения. Сначала нажмите «Сохранить» - проверка использует сохранённый токен.</string>
+    <string name="tg_check_no_token">Сначала сохраните токен бота.</string>
+    <string name="tg_check_failed">Проверка не удалась. Проверьте интернет и токен, затем повторите.</string>
+    <string name="tg_bad_token">Telegram отклонил токен. Скопируйте его у BotFather заново и сохраните.</string>
+    <string name="tg_network">Нет связи с Telegram. Проверьте интернет на телефоне (если Telegram заблокирован, нужен VPN) и повторите.</string>
+    <string name="tg_api_error">Telegram ответил ошибкой %1$d. Подождите минуту и повторите.</string>
+    <string name="tg_found">Бот найден, токен принят.</string>
+    <string name="tg_found_named">Бот найден: \@%1$s. Токен принят.</string>
+    <string name="tg_webhook_conflict">У бота включён webhook, поэтому агент не получит сообщения (Telegram вернёт конфликт). Приложение его не отключает. Отключите webhook сами через Bot API (метод deleteWebhook) или создайте у BotFather нового бота и сохраните его токен.</string>
+    <string name="tg_webhook_clear">Webhook не настроен. Запустите агента на главной и отправьте боту /start. Если бот уже принимает команды на другом устройстве, остановите его там.</string>
+    <string name="tg_webhook_unknown">Webhook проверить не удалось. Если агент потом сообщит об ошибке конфликта, у бота включён webhook.</string>
+    <string name="tg_help_title">Если бот молчит</string>
+    <string name="tg_help_body">Свой числовой ID можно узнать у любого бота-помощника по ID (например, \@userinfobot). Пишите боту в личном чате с того же аккаунта: чужие сообщения, группы и пересланные сообщения игнорируются. Бот не ответит, пока агент не запущен.</string>
+
+    <!-- fatsecret -->
+    <string name="fs_title">FatSecret</string>
+    <string name="fs_get_keys">Получить developer-ключи</string>
+    <string name="fs_get_keys_help">Ключи выдаёт FatSecret после регистрации приложения. У Basic есть бесплатный доступ с ограничениями; поиск продуктов - по базе США. Вход в свой дневник выполняется отдельно ниже.</string>
+    <string name="fs_intro">Нужен только для записи в дневник. Вход идёт через официальную страницу FatSecret в браузере, пароль в приложение не вводится.</string>
+    <string name="fs_keys_title">Ключи разработчика</string>
+    <string name="fs_key">Consumer Key</string>
+    <string name="fs_secret">Consumer Secret</string>
+    <string name="fs_save_keys">Сохранить ключи</string>
+    <string name="fs_need_both">Нужны оба значения: Consumer Key и Consumer Secret.</string>
+    <string name="fs_keys_saved">Ключи сохранены. Агент остановлен. Если ключи изменились, прежний вход сброшен - войдите в аккаунт заново.</string>
+    <string name="fs_auth_title">Вход в существующий аккаунт</string>
+    <string name="fs_status_none">Аккаунт не подключён: сначала сохраните ключи.</string>
+    <string name="fs_status_keys">Аккаунт не подключён. Ключи сохранены - выполните вход ниже.</string>
+    <string name="fs_status_token">Токен входа сохранён на телефоне. Что аккаунт доступен, подтверждает только проверка чтением дневника.</string>
+    <string name="fs_step1">Шаг 1. Откроется страница FatSecret: войдите в тот же аккаунт, где ведёте дневник, и разрешите доступ.</string>
+    <string name="fs_open_login">Открыть вход FatSecret</string>
+    <string name="fs_step2">Шаг 2. Введите код (verifier), который покажет FatSecret.</string>
+    <string name="fs_verifier">Код подтверждения (verifier)</string>
+    <string name="fs_complete">Завершить авторизацию</string>
+    <string name="fs_step3">Шаг 3. Проверьте доступ: приложение только прочитает записи за сегодня, ничего не изменит.</string>
+    <string name="fs_read">Прочитать дневник за сегодня</string>
+    <string name="fs_need_keys">Сначала сохраните ключи разработчика.</string>
+    <string name="fs_need_verifier">Введите код подтверждения, который показал FatSecret.</string>
+    <string name="fs_need_login">Сначала нажмите «Открыть вход FatSecret» и войдите в аккаунт.</string>
+    <string name="fs_need_token">Сначала завершите авторизацию (шаги 1 и 2).</string>
+    <string name="fs_failed">Не получилось. Проверьте интернет, ключи и доступ API к аккаунту, затем повторите.</string>
+    <string name="fs_browser_opened">Страница входа открыта в браузере. Войдите в аккаунт, вернитесь сюда и введите показанный код.</string>
+    <string name="fs_token_saved">Токен получен и сохранён на телефоне. Теперь проверьте доступ кнопкой чтения дневника.</string>
+    <string name="fs_read_ok">Прочитано записей за сегодня: %1$d. Сравните число с приложением FatSecret до первой записи.</string>
+    <string name="fs_disc_title">Отключение</string>
+    <string name="fs_disc_body">Удаляет токены входа только на этом телефоне. Доступ приложению в самом FatSecret при необходимости отзовите отдельно.</string>
+    <string name="fs_disconnect">Отключить FatSecret на телефоне</string>
+    <string name="fs_disc_dialog_title">Отключить FatSecret?</string>
+    <string name="fs_disc_dialog_body">Токены входа будут удалены с телефона, агент остановится. Ключи разработчика сохранятся. Доступ в самом аккаунте FatSecret это не отзывает.</string>
+    <string name="fs_disc_dialog_ok">Отключить</string>
+    <string name="fs_disconnected">Локальные токены FatSecret удалены. При необходимости отзовите доступ в аккаунте FatSecret.</string>
+
+    <!-- ai -->
+    <string name="ai_title">ИИ (по желанию)</string>
+    <string name="ai_intro">Без ИИ работают команды /meal. С ИИ бот разбирает свободный текст, фото и голос. Ничего не отправляется провайдеру, пока согласие выключено, а платные запросы идут только в ответ на ваши сообщения боту.</string>
+    <string name="ai_consent">Разрешаю отправлять текст, фото и голос из моего чата выбранному ИИ-провайдеру (может быть платно)</string>
+    <string name="ai_url">Адрес API (OpenAI-совместимый, только HTTPS)</string>
+    <string name="ai_key">Ключ API</string>
+    <string name="ai_model">Модель для текста и фото</string>
+    <string name="ai_speech">Модель распознавания голоса</string>
+    <string name="ai_bad_url">Адрес должен быть HTTPS без логина, пароля, параметров запроса и фрагмента.</string>
+    <string name="ai_need_key">С включённым согласием нужен ключ API.</string>
+    <string name="ai_saved_on">Сохранено, ИИ включён. Агент остановлен, запустите его снова на главной.</string>
+    <string name="ai_saved_off">Сохранено. Согласие выключено, данные провайдеру не отправляются.</string>
+
+    <!-- help -->
+    <string name="help_title">Помощь</string>
+    <string name="help_intro">Если что-то не работает, пройдите по списку сверху вниз.</string>
+    <string name="help_silent_title">Telegram молчит</string>
+    <string name="help_silent_1">1. На главной состояние должно быть «Работает». Если нет - нажмите «Запустить» и прочитайте подсказку под состоянием.</string>
+    <string name="help_silent_2">2. На вкладке Telegram нажмите «Проверить соединение».</string>
+    <string name="help_silent_3">3. Если найден webhook - отключите его, приложение этого не сделает само.</string>
+    <string name="help_silent_4">4. Пишите боту в личном чате с того аккаунта, чей ID сохранён. Группы и пересланные сообщения игнорируются.</string>
+    <string name="help_silent_5">5. Запросы старше пяти минут агент не выполняет и просит повторить. Если агент остановился в фоне, запустите его снова.</string>
+    <string name="help_bg_title">Работа в фоне</string>
+    <string name="help_bg_body">Автозапуск после перезагрузки не гарантируется: после перезагрузки или принудительной остановки откройте приложение и нажмите «Запустить». На Realme и подобных прошивках откройте настройки приложения, разрешите работу в фоне и отключите ограничения батареи.</string>
+    <string name="help_app_settings">Настройки приложения и батареи</string>
+    <string name="help_tools_title">Дополнительно</string>
+    <string name="help_acc_body">Специальные возможности для работы через API не нужны, включать их не требуется. Раздел оставлен только для экспериментальной автоматизации.</string>
+    <string name="help_acc_open">Настройки спецвозможностей</string>
+    <string name="help_open_fs">Открыть приложение FatSecret</string>
+    <string name="help_no_screen">Не удалось открыть этот экран настроек на телефоне.</string>
+    <string name="help_no_fs">Приложение FatSecret не установлено или недоступно.</string>
+
+    <!-- diagnostics -->
+    <string name="diag_title">Диагностика</string>
+    <string name="diag_intro">Здесь нет токенов, ID, ключей, текста сообщений и данных о блюдах. На этом экране можно делать скриншот. При выходе защита экрана включается снова.</string>
+    <string name="diag_back">Назад</string>
+    <string name="val_yes">да</string>
+    <string name="val_no">нет</string>
+    <string name="diag_app">Версия приложения</string>
+    <string name="diag_android">Android</string>
+    <string name="diag_device">Устройство</string>
+    <string name="diag_service">Служба</string>
+    <string name="diag_service_on">работает</string>
+    <string name="diag_service_off">не запущена</string>
+    <string name="diag_state">Состояние</string>
+    <string name="diag_status">Статус службы</string>
+    <string name="diag_contact">Последний контакт</string>
+    <string name="diag_token">Токен сохранён, формат верен</string>
+    <string name="diag_chat">ID чата задан</string>
+    <string name="diag_fs_keys">Ключи FatSecret сохранены</string>
+    <string name="diag_fs_token">Токен FatSecret сохранён</string>
+    <string name="diag_ai">Согласие на ИИ</string>
+    <string name="diag_ai_key">Ключ ИИ сохранён</string>
+    <string name="diag_write">Блокировка неясной записи</string>
+    <string name="diag_notif">Уведомления разрешены</string>
+    <string name="diag_battery">Без ограничений батареи</string>
+    <string name="diag_updated">Обновлено</string>
+
+    <!-- misc -->
+    <string name="hint_saved">Сохранено - оставьте пустым, чтобы не менять</string>
+    <string name="hint_enter">Введите на телефоне</string>
+    <string name="hint_optional">Необязательно</string>
+    <string name="ago_now">только что</string>
+    <string name="ago_sec">%1$d с назад</string>
+    <string name="ago_min">%1$d мин назад</string>
+</resources>

@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -22,125 +21,148 @@ class AgentService : Service() {
     private lateinit var store: SecretStore
     override fun onCreate() { super.onCreate(); store = SecretStore(this) }
     override fun onBind(intent: Intent?): IBinder? = null
-    private fun notification(status: String): Notification {
+
+    private fun notification(message: String): Notification {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("agent", "Telegram agent", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel("agent", "Связь с Telegram", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, AgentService::class.java).setAction("STOP"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return Notification.Builder(this, "agent").setContentTitle("Android Agent").setContentText(status)
-            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentIntent(open).setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Stop", stop).build()).build()
+        return Notification.Builder(this, "agent").setContentTitle("Android Agent").setContentText(message)
+            .setSmallIcon(R.drawable.ic_stat_agent).setContentIntent(open).setOngoing(true)
+            .addAction(Notification.Action.Builder(null, "Остановить", stop).build()).build()
     }
-    private fun status(message: String) {
+
+    private fun status(state: String, message: String) {
+        store.put("service_state", state)
         store.put("service_status", message)
-        getSystemService(NotificationManager::class.java).notify(1, notification(message))
+        if (running) getSystemService(NotificationManager::class.java).notify(1, notification(message))
     }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") { stopSelf(); return START_NOT_STICKY }
-        startForeground(1, notification("Starting authorized Telegram polling"))
+        startForeground(1, notification("Подключение к Telegram…"))
         if (!running && workerActive) {
-            status("Previous worker is stopping. Wait, then Start again.")
-            stopSelf(); return START_NOT_STICKY
+            status("stopped", "Предыдущий запуск ещё завершается. Подожди несколько секунд и запусти снова.")
+            stopSelf()
+            return START_NOT_STICKY
         }
-        if (!running && !workerActive) { running = true; workerActive = true; worker.submit { workerThread = Thread.currentThread(); try { poll() } finally { workerThread = null } } }
-        // Explicit user start after process death/reboot; no unexpected background activation.
+        if (!running) {
+            running = true
+            workerActive = true
+            status("starting", "Проверяем токен и подключение…")
+            worker.submit {
+                workerThread = Thread.currentThread()
+                try { poll() } finally { workerThread = null }
+            }
+        }
         return START_NOT_STICKY
     }
+
     private fun poll() {
         try {
             if (!running) return
             val config = store.config()
             val owner = config.optString("chat_id").toLongOrNull() ?: 0L
-            require(owner > 0) { "Configure a positive private Telegram chat ID" }
+            require(owner > 0)
             val token = config.optString("bot_token")
             val telegram = TelegramApi(token, client)
             val scope = MessageDigest.getInstance("SHA-256").digest(token.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
             val offsetKey = "offset_$scope"
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
-            val engine = MealEngine(store, FatSecretApi(config, client))
+            val commands = AgentCommands(store, config, FatSecretApi(config, client), client)
             var failures = 0
-            status("Listening to configured private Telegram chat")
+            var firstPoll = true
             while (running && !Thread.currentThread().isInterrupted) {
                 try {
-                    val updates = telegram.updates(offset)
+                    if (firstPoll) {
+                        val identity = telegram.identity()
+                        store.put("telegram_username", identity.optString("username"))
+                        if (telegram.webhookConfigured()) {
+                            status("error", "У бота включён webhook. Отключи его в прежнем сервисе или используй отдельного бота. Настройки автоматически не менялись.")
+                            return
+                        }
+                    }
+                    // A successful getMe alone does not prove that this bot can poll.
+                    val updates = telegram.updates(offset, if (firstPoll) 0 else 45)
+                    if (!running) break
+                    store.put("last_contact", System.currentTimeMillis().toString())
+                    status("listening", "На связи. Открой бота в Telegram и отправь /help.")
+                    if (firstPoll) {
+                        firstPoll = false
+                        telegram.send(owner, "Android Agent запущен на Android и принимает команды.\nНажми «Помощь», чтобы начать. FatSecret и ИИ настраиваются отдельно.")
+                        store.put("last_delivery", System.currentTimeMillis().toString())
+                    }
                     for (update in updates) {
                         if (!running || Thread.currentThread().isInterrupted) break
                         val id = update.getLong("update_id")
                         if (id < offset) continue
-                        // At-most-once dispatch; a crash can lose a command but cannot replay a write.
+                        // Persist before dispatch: an interrupted command must never replay a diary write.
                         offset = id + 1
                         store.put(offsetKey, offset.toString())
                         val message = update.optJSONObject("message") ?: continue
                         if (!TelegramAccess.allowed(message, owner)) continue
-                        val age = System.currentTimeMillis()/1000 - message.optLong("date")
-                        if (age !in 0..300) continue
-                        val answer = try { handle(message, telegram, engine, config) }
-                        catch (e: IllegalArgumentException) { e.message?.take(700) ?: "Invalid input. Send /help." }
-                        catch (_: Exception) { "Request failed. Check phone status, network and credentials. No diary write was retried. Send /status." }
-                        if (running) telegram.send(owner, answer)
+                        val age = System.currentTimeMillis() / 1000 - message.optLong("date")
+                        if (age !in 0..300) {
+                            telegram.send(owner, "Этот запрос пришёл больше пяти минут назад или время телефона неверно. Я его не выполнял. Пришли команду ещё раз.")
+                            continue
+                        }
+                        store.put("last_message", System.currentTimeMillis().toString())
+                        val reply = try { commands.handle(message, telegram) }
+                        catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
+                        catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }
+                        if (running) {
+                            telegram.send(owner, reply.text)
+                            store.put("last_delivery", System.currentTimeMillis().toString())
+                        }
+                        if (reply.stop) { running = false; break }
                     }
                     failures = 0
-                    if (running) status("Listening to configured private Telegram chat")
                 } catch (e: Exception) {
                     if (!running || Thread.currentThread().isInterrupted) break
-                    failures = (failures + 1).coerceAtMost(8)
-                    val retry = (e as? ApiFailure)?.retrySeconds ?: 0
-                    if ((e as? ApiFailure)?.status in listOf(401,403,409)) {
-                        status("Polling stopped: credentials, chat access or another poller conflict; fix and restart")
+                    val code = (e as? ApiFailure)?.status
+                    if (code in listOf(401, 403, 404, 409)) {
+                        status("error", when (code) {
+                            401, 404 -> "Telegram отклонил токен ($code). Проверь токен в настройках и запусти снова."
+                            403 -> "Бот не может написать тебе (403). Открой его в Telegram, нажми «Начать» и проверь ID владельца."
+                            else -> "Конфликт Telegram (409): этот же бот запущен на другом устройстве или в другом сервисе. Останови второй приёмник и запусти снова."
+                        })
                         break
                     }
-                    status("Network/API error; waiting to reconnect")
-                    val delay = maxOf(retry.coerceIn(0,3600), (1L shl failures).coerceAtMost(60))
+                    failures = (failures + 1).coerceAtMost(8)
+                    val retry = (e as? ApiFailure)?.retrySeconds ?: 0
+                    val delay = maxOf(retry.coerceIn(0, 3600), (1L shl failures).coerceAtMost(60))
+                    status("reconnecting", "Нет связи с Telegram. Повтор через $delay с. Проверь интернет.")
                     TimeUnit.MILLISECONDS.sleep(delay * 1000 + Random.nextLong(500))
                 }
             }
-        } catch (_: Exception) {
-            try { status("Agent stopped: check encrypted configuration") } catch (_: Exception) { }
-        } finally { running = false; workerActive = false; stopSelf() }
-    }
-    private fun handle(message: JSONObject, telegram: TelegramApi, engine: MealEngine, config: JSONObject): String {
-        val text = message.optString("text", message.optString("caption")).trim()
-        when {
-            text == "/help" || text == "/start" -> return "Commands:\n/meal YYYY-MM-DD lunch food cooked=200;rice cooked=150\n/pick ITEM CHOICE\n/confirm CODE\n/cancel\n/status\n/stop\nMeal types: breakfast, lunch, dinner, other. Natural text/photo/voice requires AI consent in the app. All diary writes require review."
-            text == "/status" -> return "Agent active. " + (if (store.get("write_intent").isNotBlank()) "Uncertain write blocked; inspect diary and acknowledge in app. " else "No uncertain write. ") + store.get("last_result")
-            text == "/stop" -> { stopSelf(); return "Agent stopping. Restart from the phone app." }
-            text == "/cancel" -> return engine.cancel()
-            text.startsWith("/pick ") -> {
-                val parts = text.split(Regex("\\s+"))
-                require(parts.size == 3) { "Use /pick ITEM CHOICE" }
-                return engine.pick(parts[1].toInt(), parts[2].toInt())
+        } catch (e: Exception) {
+            if (running) {
+                val code = (e as? ApiFailure)?.status
+                try {
+                    status("error", when (code) {
+                        401 -> "Telegram отклонил токен (401). Исправь его в настройках."
+                        403 -> "Доступ к боту запрещён (403). Проверь настройки Telegram."
+                        else -> if (e is IllegalArgumentException) "Агент не настроен. Сохрани токен и положительный ID в разделе Telegram."
+                                else "Не удалось подключиться. Проверь интернет и настройки Telegram, затем запусти снова."
+                    })
+                } catch (_: Exception) { /* Storage may be unavailable; the worker must still stop. */ }
             }
-            text.startsWith("/confirm ") -> return engine.confirm(text.removePrefix("/confirm ").trim())
-            text.startsWith("/meal ") -> return engine.prepare(Meals.parse(text))
-            text.startsWith("/") -> return "Unknown command. Send /help."
+        } finally {
+            running = false
+            try {
+                if (store.get("service_state") != "error") status("stopped", "Агент остановлен. Запуск - кнопкой в приложении.")
+            } finally {
+                workerActive = false
+                stopSelf()
+            }
         }
-        require(config.optBoolean("ai_consent")) { "Text/photo/voice AI uploads are disabled. Configure AI and consent on the phone or use /meal." }
-        val ai = AiMeals(config, client)
-        val voice = message.optJSONObject("voice")
-        if (voice != null) {
-            require(voice.optInt("duration") in 1..120) { "Voice limit: 120 seconds" }
-            val bytes = telegram.download(voice.getString("file_id"), voice.optLong("file_size"), 8_000_000)
-            return engine.prepare(ai.parse(ai.transcribe(bytes)))
-        }
-        val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
-        if (message.has("photo")) {
-            require(photo != null) { "Photo limit: 4 MB" }
-            val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
-            return engine.prepare(ai.parse(text, bytes))
-        }
-        require(text.isNotBlank()) { "Send text, a photo with explicit portions, or a voice message." }
-        return engine.prepare(ai.parse(text))
     }
+
     override fun onDestroy() {
         running = false
         workerThread?.interrupt()
         client.dispatcher.cancelAll()
-        // Let a queued-but-not-yet-started task enter finally and release workerActive.
         worker.shutdown()
-        try {
-            val last = store.get("service_status")
-            if (last.startsWith("Listening") || last.startsWith("Network")) store.put("service_status", "Stopped. Start the agent from the phone app.")
-        } catch (_: Exception) { }
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

@@ -22,12 +22,17 @@ jobs:
         with:
           validate-wrappers: true
       - name: Test, lint and build debug APK
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
       - uses: actions/upload-artifact@v4
         with:
           name: android-agent-debug
           if-no-files-found: error
           path: app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-agent-smoke-test
+          if-no-files-found: error
+          path: app/build/outputs/apk/androidTest/debug/*.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -36,3 +41,37 @@ jobs:
             app/build/reports/tests/
             app/build/test-results/
             app/build/reports/lint-results-debug.*
+  emulator:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-agent-debug
+          path: app/build/outputs/apk/debug
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-agent-smoke-test
+          path: app/build/outputs/apk/androidTest/debug
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools emulator system-images;android-30;default;x86_64
+          log-accepted-android-sdk-licenses: false
+      - name: Boot disposable Android 11 emulator
+        run: |
+          test -e /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          echo no | avdmanager create avd --name Agent_API30 --package 'system-images;android-30;default;x86_64' --device pixel_2
+          "$ANDROID_HOME/emulator/emulator" -avd Agent_API30 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 1536 -cores 2 -camera-back none -camera-front none > "$RUNNER_TEMP/emulator.log" 2>&1 &
+      - name: Verify runtime, Russian UI and protected diagnostics
+        run: ./scripts/device-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: android-agent-emulator-screenshots
+          if-no-files-found: error
+          path: .local/qa/*.png

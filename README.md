@@ -1,40 +1,40 @@
-# Android Agent — FatSecret-first
+# Android Agent
 
-A Kotlin **on-device Android 11+** personal agent for Realme 6 Pro. Telegram controls an existing FatSecret diary without an always-on PC or a project backend. Cloud services are called directly from the phone.
+Личный агент дневника питания для **Android 11+ / Realme 6 Pro**. Получает команды из своего приватного Telegram-чата и работает прямо на телефоне, без постоянно включённого ПК и сервера проекта.
 
-**Status:** debug APK builds locally and in CI. Secure Telegram transport, existing-account OAuth, reviewed meal entry and optional AI input are implemented. **Real-account diary writes and Realme operation are not yet verified; this is not an accepted MVP.** See [PROGRESS](docs/PROGRESS.md) for exact evidence and blockers.
+Версия **0.3.0**: русский интерфейс с отдельными вкладками, заметное состояние службы, проверка бота и безопасная диагностика. Официальная интеграция FatSecret требует developer-ключей и авторизации существующего аккаунта. Реальный дневник и поведение энергосбережения Realme ещё требуют проверки; готовность всего MVP не объявляется по одной сборке.
 
-[Установка и настройка на русском](docs/INSTALL_RU.md) · [Architecture decisions](docs/DECISIONS.md) · [Upstream audit](docs/UPSTREAM.md) · [CI / APK artifacts](https://github.com/Oleg-1703/android-agent/actions/workflows/android.yml)
+[Настройка на телефоне](docs/INSTALL_RU.md) · [Разработка и эмулятор](docs/DEVELOPMENT_RU.md) · [Проверки и состояние](docs/PROGRESS.md) · [Сборки APK](https://github.com/Oleg-1703/android-agent/actions/workflows/android.yml)
 
-## Implemented
-- Opt-in foreground Telegram long polling, persistent notification/Stop, encrypted offset, bounded reconnect backoff and private chat + sender allowlist. No boot auto-start. At-most-once dispatch can lose a command on a crash, avoiding automatic replay of writes.
-- Android Keystore AES-GCM for credentials and persistent state; in-app configuration, no secrets in chat, no backup or raw UI uploads.
-- FatSecret official OAuth 1.0 browser authorization for an **existing member** (no replacement `profile.create`), food search, gram-based serving conversion and diary API integration.
-- `/meal YYYY-MM-DD lunch chicken cooked=200;rice cooked=150`, explicit `/pick ITEM CHOICE`, review and expiring `/confirm CODE`, `/cancel`, `/status`, `/stop`. Existing foods trigger a duplicate warning. Every create is followed by read-back verification; uncertain writes are durably blocked without automatic retry. Multi-item meals can partially complete.
-- Optional OpenAI-compatible natural text/image extraction and voice transcription with explicit provider upload consent. All results still need food selection and review. Provider compatibility and live quality require testing.
-- Package-restricted Accessibility inspection and internal bounded click/text/scroll primitives. No remote arbitrary phone control or unverified FatSecret UI recipe.
+## Начало работы
 
-## Build and test
-Requires JDK 17, Android SDK platform 35 / build-tools 35.0.0; minSdk 30, targetSdk 35.
+1. На вкладке **Telegram** введи токен бота и свой числовой ID, сохрани и проверь соединение. FatSecret и ИИ для этого не нужны.
+2. На **Главной** нажми **Запустить**, дождись состояния **Работает** и открой бота. В чате появятся кнопки и помощь `/help`.
+3. Для дневника подключи существующий аккаунт на вкладке **FatSecret** и сначала проверь чтение. Фото, свободное описание еды и голос включаются отдельно на вкладке **ИИ**, после согласия на обработку выбранным провайдером.
+
+## Возможности
+
+- Telegram: проверка токена/webhook, постоянное уведомление, явные запуск/остановка, ошибки авторизации и второго приёмника, переподключение при потере сети. Принимается только настроенный приватный чат с совпадающим отправителем; группы и пересылки отвергаются.
+- `/today` или «Что я сегодня ел?» читают дневник без ИИ. `/status`, `/help`, `/cancel`, `/stop` работают отдельно от подключения FatSecret.
+- `/meal YYYY-MM-DD lunch chicken cooked=200;rice cooked=150` готовит запись без ИИ. Для каждого продукта нужен выбор `/pick`, затем проверка даты, количества и подтверждение `/confirm CODE`. Приёмы пищи: breakfast, lunch, dinner, other.
+- Каждая запись читается обратно из FatSecret. Неопределённый результат блокирует новые записи: автоматического повтора нет. Сначала проверь дневник вручную и только затем снимай блокировку в приложении.
+- Секреты, offset и журнал операций зашифрованы Android Keystore; backup отключён. Формы защищены от скриншотов. Обезличенная **Диагностика для скриншота** не содержит токенов, ID и еды.
+- Accessibility ограничен FatSecret и оставлен экспериментальным. Для API он не нужен. Непроверенного сценария управления экраном приложение не выдаёт за рабочую функцию.
+
+## Сборка и тесты
+
+JDK 17, Gradle wrapper 8.9, Android SDK 35 / build-tools 35.0.0. Минимальный Android API 30, target 35.
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
 ```
 
-For the dependency-free Android 11 smoke runner, build `./gradlew assembleDebugAndroidTest`, boot a clean disposable API 30 emulator and run `./scripts/device-smoke.sh` with `ANDROID_HOME` set. The script refuses non-emulator devices. It checks Activity/Keystore/foreground failure behavior and force-stops/relaunches to check encrypted persistence.
+На Windows используй [scripts/dev.ps1](scripts/dev.ps1) по [инструкции](docs/DEVELOPMENT_RU.md). Локальные инструменты и ключ подписи лежат вне Git. APK: `app/build/outputs/apk/debug/app-debug.apk`. CI публикует APK, тесты и скриншоты чистого Android 11 эмулятора. [scripts/device-smoke.sh](scripts/device-smoke.sh) проверяет Keystore, перезапуск, службу и русский интерфейс; физические устройства и непустую конфигурацию он отвергает.
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`. GitHub Actions uploads `android-agent-debug` after successful tests/lint/build. Wrapper 8.9 distribution checksum is pinned. CI APKs use ephemeral debug signing keys; see installation notes before updating an existing install.
+## Границы проверки
 
-## Roadmap / remaining acceptance
-1. Completed: reproducible debug build and CI artifacts.
-2. Implemented, device validation pending: Telegram service, secure setup and bounded local automation.
-3. Implemented, account validation pending: official existing-account FatSecret OAuth/search/review/write/read-back pipeline.
-4. Implemented, provider validation pending: optional text/photo/voice parsing.
-5. Required: Realme installation, account authorization and a real diary write, reconnect/lock/battery tests, provider tests. Issues remain open until their acceptance evidence exists.
+Сборка, JVM-контракты и эмулятор не доказывают доступ к существующему FatSecret-аккаунту, качество распознавания фото, установку через Play Protect или фоновую работу на Realme. Эти проверки описаны в [инструкции](docs/INSTALL_RU.md). Не отправляй credentials в Issues и не включай платные API без отдельного решения.
 
-## Security and limitations
-The repository is public. Never commit bot/model/OAuth credentials, meal history, logs or signing keys. A confirmed food entry is a real diary modification. The app never automatically retries a create with an uncertain result; inspect your diary before acknowledging its local block. The configured private Telegram owner is the only remote user. Accessibility is optional for the API path and limited to FatSecret. Phone control cannot work while locked. Read the installation guide for exact command semantics, limits and recovery.
+Поиск продуктов использует доступный регион FatSecret; иногда нужно английское название. Без поддержки аккаунта официальным API приложение не подменяет дневник новым профилем и не угадывает действия в чужом UI. Запись нескольких продуктов не атомарна. После перезагрузки или принудительной остановки агент запускается пользователем заново.
 
-Reuses OkHttp (Apache-2.0) and Android platform APIs. No upstream agent source has been copied. See the source/license audit before any future reuse.
-
-Runtime dependency notices and full Apache-2.0/MPL-2.0 license texts are bundled in [APK assets](app/src/main/assets/licenses). Upstream Public Suffix List NOTICE is preserved.
+Используются OkHttp и Android platform API. Сторонний код агентов не копировался; [аудит](docs/UPSTREAM.md), [архитектура](docs/DECISIONS.md), [лицензии в APK](app/src/main/assets/licenses).
