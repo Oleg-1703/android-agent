@@ -482,10 +482,10 @@ class MainActivity : Activity() {
         val page = column()
         pageTitle(page, R.string.fs_title, R.string.fs_intro)
         val screen = card()
-        screen.add(heading("Управление приложением"))
-        screen.add(body("Войди в обычный FatSecret и включи специальные возможности Android Agent. Developer-ключи и отдельный вход через сайт не нужны. Во время работы телефон должен быть разблокирован."), 8)
+        screen.add(heading("Вход и доступ"))
         screen.add(button("Открыть FatSecret") { openFatSecret() }, 12)
         screen.add(button("Включить специальные возможности", Ui.Style.SECONDARY) { launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, 10)
+        screen.add(body("Войди в свой аккаунт в самом FatSecret и включи службу Android Agent. Во время управления телефон должен быть разблокирован."), 12)
         val screenResult = resultView()
         screen.add(button("Прочитать сводку дневника", Ui.Style.SECONDARY) {
             background(screenResult, R.string.fs_screen_failed) { Outcome(Ui.Tone.OK, FatUi(this@MainActivity).today()) }
@@ -621,9 +621,8 @@ class MainActivity : Activity() {
         val page = column()
         pageTitle(page, R.string.ai_title, R.string.ai_intro)
         val pc = card()
-        pc.add(heading("ИИ через твою подписку на ПК"))
-        pc.add(body("API-ключ не нужен. Используется вход в Claude Code на твоём ПК. ПК и помощник должны быть включены. Текст еды отправляется на твой ПК и в Claude; запись появится только после подтверждения. Лимиты подписки сохраняются."), 8)
-        pcUrl = field("HTTPS-адрес помощника на ПК")
+        pc.add(heading("Подключение ПК"))
+        pcUrl = field("HTTPS-адрес ПК")
         pcUrl.edit.setText(config?.optString("pc_url").orEmpty())
         pcPairing = field("Код сопряжения с ПК", secret = true)
         pcPairing.edit.hint = if (config?.optString("pc_pairing").orEmpty().isNotEmpty()) "Код сохранён" else "Из настроек помощника на ПК"
@@ -633,6 +632,7 @@ class MainActivity : Activity() {
             setTextColor(color(R.color.navy)); minHeight = dp(48)
         }
         pc.add(pcUrl.box, 12); pc.add(pcPairing.box, 12); pc.add(pcConsent, 12)
+        pc.add(body("Помощник на ПК использует вход в Claude Code. ПК должен быть включён, лимиты подписки сохраняются. Запись в FatSecret - только после подтверждения."), 12)
         val pcResult = resultView()
         pc.add(button("Сохранить подключение ПК") {
             try {
@@ -641,18 +641,39 @@ class MainActivity : Activity() {
                 val token = pcPairing.edit.text.toString().trim().ifBlank { current.optString("pc_pairing") }
                 if (pcConsent.isChecked) {
                     PcBrain.endpoint(url)
-                    require(token.length in 32..200 && token.all { it.isLetterOrDigit() || it in "_-" }) { "Введи код сопряжения из помощника на ПК." }
+                    require(token.matches(Regex("[A-Za-z0-9_-]{32,200}"))) { "Введи код сопряжения из помощника на ПК." }
                 }
                 current.put("pc_url", url).put("pc_pairing", token).put("pc_consent", pcConsent.isChecked)
                 stopService(Intent(this@MainActivity, AgentService::class.java))
                 store.put("config", current.toString())
                 pcPairing.edit.setText("")
+                if (token.isNotBlank()) pcPairing.edit.hint = getString(R.string.hint_saved)
                 show(pcResult, Ui.Tone.OK, "Сохранено. Запусти агента на главном экране.")
             } catch (e: IllegalArgumentException) {
                 show(pcResult, Ui.Tone.ERR, e.message ?: "Проверь настройки ПК.")
+            } catch (_: Exception) {
+                show(pcResult, Ui.Tone.ERR, getString(R.string.save_failed))
             }
         }, 12)
         pc.add(pcResult, 8)
+        pc.add(button("Проверить связь с ПК", Ui.Style.SECONDARY) {
+            if (busy) show(pcResult, Ui.Tone.WARN, getString(R.string.wait_busy))
+            else {
+                val candidate = try { store.config() } catch (_: Exception) { JSONObject() }
+                candidate.put("pc_url", pcUrl.edit.text.toString().trim())
+                candidate.put("pc_pairing", pcPairing.edit.text.toString().trim().ifBlank { candidate.optString("pc_pairing") })
+                background(pcResult, R.string.pc_check_failed) {
+                    try {
+                        val health = PcBrain(candidate, client).check()
+                        if (health.limited) Outcome(Ui.Tone.WARN, "ПК на связи. Достигнут лимит подписки." +
+                            (if (health.reset.isNotBlank()) " Сброс в ${health.reset} по времени ПК." else ""))
+                        else Outcome(Ui.Tone.OK, "ПК на связи. Для разбора еды используется текущая подписка, API-ключ не нужен.")
+                    } catch (e: IllegalArgumentException) {
+                        Outcome(Ui.Tone.ERR, e.message ?: getString(R.string.pc_check_failed))
+                    }
+                }
+            }
+        }, 10)
         page.add(pc, 14)
         val c = card()
         c.visibility = View.GONE
@@ -785,10 +806,8 @@ class MainActivity : Activity() {
             R.string.diag_contact to ago(snap.contact).ifBlank { "-" },
             R.string.diag_token to b(snap.tokenValid),
             R.string.diag_chat to b(snap.chatOk),
-            R.string.diag_fs_keys to b(snap.fsKeys),
-            R.string.diag_fs_token to b(snap.fsToken),
-            R.string.diag_ai to b(snap.aiConsent),
-            R.string.diag_ai_key to b(snap.aiKey),
+            R.string.diag_accessibility to b(snap.screenReady),
+            R.string.diag_pc to b(snap.pcReady),
             R.string.diag_write to b(snap.writeIntent),
             R.string.diag_notif to b(getSystemService(NotificationManager::class.java).areNotificationsEnabled()),
             R.string.diag_battery to b(power.isIgnoringBatteryOptimizations(packageName)),

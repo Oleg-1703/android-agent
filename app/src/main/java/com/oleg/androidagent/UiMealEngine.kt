@@ -20,13 +20,14 @@ class UiMealEngine(private val store: StateStore, private val ui: MealScreen) {
         require(store.get("write_intent").isBlank()) { "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." }
         require(meal.getString("date") == LocalDate.now().toString()) { "Управление экраном пока поддерживает только сегодня." }
         require(meal.getJSONArray("items").length() == 1) { "Сейчас добавляй по одному продукту: так проще проверить каждую порцию." }
+        if (store.get("ui_pending").isNotBlank()) cancel()
         store.put("ui_pending", "")
         val item = meal.getJSONArray("items").getJSONObject(0)
         val rows = ui.search(meal.getString("meal"), item.getString("query"))
         meal.put("choices", JSONArray(rows.map { JSONObject().put("name", it.name).put("detail", it.detail) }))
             .put("created", System.currentTimeMillis()).put("screen", ui.screenStamp()).put("context", ui.searchContext())
         store.put("ui_pending", meal.toString())
-        return "Выбери продукт для ${item.getString("grams")} г:\n" + rows.mapIndexed { i, row -> "${i + 1}. ${row.name} - ${row.detail}" }.joinToString("\n") +
+        return "Поиск «${item.getString("query")}», ${item.getString("grams")} г. Выбери точный продукт из FatSecret:\n" + rows.mapIndexed { i, row -> "${i + 1}. ${row.name} - ${row.detail}" }.joinToString("\n") +
             "\n/pick 1 НОМЕР, например /pick 1 2. Ничего не сохранено. /cancel - отмена."
     }
     fun pick(item: Int, choice: Int): String {

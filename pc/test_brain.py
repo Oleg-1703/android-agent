@@ -35,12 +35,25 @@ class BrainTests(unittest.TestCase):
     @patch.object(brain, "parse_meal")
     def test_unauthorized_never_runs_model(self, model):
         self.assertEqual(self.post({"text": "x", "date": "2026-11-15"}, token="wrong")[0], 401)
+        self.assertEqual(self.post({"text": "x", "date": "2026-11-15"}, token="é" * 32)[0], 401)
         model.assert_not_called()
 
     @patch.object(brain, "parse_meal")
     def test_invalid_requests_never_run_model(self, model):
         for body in ({}, {"text": "x" * 4001, "date": "2026-11-15"}, {"text": "x", "date": "yesterday"}):
             self.assertEqual(self.post(body)[0], 400)
+        model.assert_not_called()
+
+    @patch.object(brain, "parse_meal")
+    def test_remote_urls_bad_base64_and_dual_media_never_run_model(self, model):
+        invalid = [
+            {"image": {"url": "https://example.invalid/private.jpg"}},
+            {"image": {"data": "not base64", "media_type": "image/jpeg"}},
+            {"voice": {"data": "AAAA"}},
+            {"image": {"data": "AAAA"}, "voice": {"data": "AAAA"}},
+        ]
+        for media in invalid:
+            self.assertEqual(self.post({"text": "food", "date": "2026-11-15", **media})[0], 400)
         model.assert_not_called()
 
     @patch.object(brain, "parse_meal")
@@ -56,6 +69,48 @@ class BrainTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
         self.assertTrue(self.server.busy.acquire(blocking=False))
         self.server.busy.release()
+
+    @patch.object(brain, "parse_meal")
+    def test_clarification_reuses_food_then_erases_context(self, model):
+        model.side_effect = [
+            {"question": "Какой приём пищи?", "items": []},
+            {"question": "", "items": [{"query": "banana", "grams": "100"}]},
+        ]
+        _, first = self.post({"text": "banana 100g", "date": "2026-11-15"})
+        key = first["conversation"]
+        status, second = self.post({"text": "lunch", "date": "2026-11-15", "conversation": key})
+        self.assertEqual(status, 200)
+        self.assertIn("banana 100g", model.call_args.args[0])
+        self.assertIn("lunch", model.call_args.args[0])
+        self.assertNotIn(key, self.server.drafts)
+
+    @patch.object(brain, "parse_meal")
+    def test_expired_clarification_does_not_guess_new_meal(self, model):
+        key = "b8fac2e7-8546-46bc-b55a-600d45c8a461"
+        status, _ = self.post({"text": "100g", "date": "2026-11-15", "conversation": key})
+        self.assertEqual(status, 410)
+        model.assert_not_called()
+        self.assertTrue(self.server.busy.acquire(blocking=False))
+        self.server.busy.release()
+
+    @patch.object(brain, "parse_meal", return_value={"question": "Какой приём пищи?", "items": []})
+    def test_clarification_cannot_silently_move_food_across_midnight(self, model):
+        _, first = self.post({"text": "banana100g", "date": "2026-11-15"})
+        key = first["conversation"]
+        status, _ = self.post({"text": "lunch", "date": "2026-11-16", "conversation": key})
+        self.assertEqual(status, 410)
+        self.assertNotIn(key, self.server.drafts)
+        self.assertEqual(model.call_count, 1)
+
+    @patch.object(brain, "parse_meal", side_effect=brain.SubscriptionLimit("00:40"))
+    def test_explicit_subscription_limit_is_cached_without_paid_fallback(self, model):
+        body = {"text": "banana 100g lunch", "date": "2026-11-15"}
+        for _ in range(2):
+            status, response = self.post(body)
+            self.assertEqual(status, 429)
+            self.assertEqual(response["error"], "subscription_limit")
+            self.assertEqual(response["reset"], "00:40")
+        self.assertEqual(model.call_count, 1)
 
     @patch.object(brain.subprocess, "run")
     def test_cli_has_no_tools_no_persistence_and_no_paid_auth(self, run):

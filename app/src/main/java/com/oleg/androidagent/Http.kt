@@ -7,7 +7,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class ApiFailure(val status: Int = 0, val retrySeconds: Long = 0) : IOException("Remote request failed ($status); check connection and account configuration")
+class ApiFailure(val status: Int = 0, val retrySeconds: Long = 0, val reason: String = "", val resetHint: String = "") : IOException("Remote request failed ($status); check connection and account configuration")
 object Http {
     fun client(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(65, TimeUnit.SECONDS)
@@ -25,14 +25,18 @@ object Http {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 var retry = response.header("Retry-After")?.toLongOrNull() ?: 0
+                var reason = ""
+                var resetHint = ""
                 try {
                     val source = response.body?.source()
                     if (source != null && !source.request(8193)) {
                         val error = JSONObject(source.buffer.readUtf8())
                         retry = maxOf(retry, error.optJSONObject("parameters")?.optLong("retry_after") ?: 0)
+                        reason = error.optString("error").takeIf { it in setOf("busy", "subscription_limit", "subscription_unavailable", "clarification_expired") }.orEmpty()
+                        resetHint = error.optString("reset").takeIf { it.matches(Regex("(?:[01][0-9]|2[0-3]):[0-5][0-9]")) }.orEmpty()
                     }
                 } catch (_: Exception) { /* Never expose raw remote error bodies. */ }
-                throw ApiFailure(response.code, retry)
+                throw ApiFailure(response.code, retry, reason, resetHint)
             }
             onHeaders?.invoke(response.headers)
             val body = response.body ?: throw ApiFailure()

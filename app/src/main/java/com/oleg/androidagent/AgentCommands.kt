@@ -23,10 +23,10 @@ class AgentCommands(
     }
     fun handle(message: JSONObject, telegram: TelegramApi): CommandReply {
         val text = message.optString("text", message.optString("caption")).trim()
-        val command = text.substringBefore(' ').substringBefore('@').lowercase(Locale.ROOT)
+        val command = text.takeWhile { !it.isWhitespace() }.substringBefore('@').lowercase(Locale.ROOT)
         val natural = text.lowercase(Locale.ROOT).trimEnd('?', '.', '!')
         if (ui != null && !config.optBoolean("legacy_api_mode")) {
-            return handleUi(text, command, natural)
+            return handleUi(message, telegram, text, command, natural)
         }
         when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> return CommandReply(
@@ -95,13 +95,13 @@ class AgentCommands(
         return CommandReply(engine.prepare(ai.parse(text)))
     }
 
-    private fun handleUi(text: String, command: String, natural: String): CommandReply {
+    private fun handleUi(message: JSONObject, telegram: TelegramApi, text: String, command: String, natural: String): CommandReply {
         val screen = requireNotNull(ui)
         val meals = UiMealEngine(store, screen)
         return when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
                 "Управляю установленным FatSecret. Developer-ключи не нужны. Телефон должен быть разблокирован, специальные возможности Android Agent включены.\n\n" +
-                    "/today - сводка дневника\n/meal ${LocalDate.now()} lunch banana=100 - найти продукт и подготовить порцию\n" +
+                    "/today - сводка дневника\n/meal обед банан=100 - найти продукт и подготовить порцию на сегодня\n" +
                     "/pick 1 НОМЕР - выбрать продукт\n/confirm КОД - сохранить после проверки\n/cancel - отмена\n/status - состояние\n/stop - остановка\n\n" +
                     "По одному продукту, только сегодня. breakfast - завтрак, lunch - обед, dinner - ужин, other - перекус. ИИ по подписке на ПК подключается отдельно; API-ключ не требуется."
             )
@@ -111,18 +111,48 @@ class AgentCommands(
                     (if (store.get("write_intent").isNotBlank()) "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." else "Непроверенных записей нет.")
             )
             command == "/stop" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
-            command == "/cancel" || natural == "отмена" -> CommandReply(meals.cancel())
+            command == "/cancel" || natural == "отмена" -> {
+                store.put("pc_dialogue", "")
+                CommandReply(meals.cancel())
+            }
             command == "/today" || natural in setOf("сегодня", "дневник", "что я сегодня ел", "что я ел сегодня") -> CommandReply(screen.today())
-            command == "/meal" -> CommandReply(meals.prepare(Meals.parse(text)))
+            command == "/meal" -> {
+                store.put("pc_dialogue", "")
+                CommandReply(meals.prepare(UiMeals.parse(text)))
+            }
             command == "/pick" -> {
                 val parts = text.split(Regex("\\s+"))
                 require(parts.size == 3) { "Выбор: /pick 1 НОМЕР" }
                 CommandReply(meals.pick(requireNotNull(parts[1].toIntOrNull()), requireNotNull(parts[2].toIntOrNull())))
             }
-            command == "/confirm" -> CommandReply(meals.confirm(text.substringAfter(' ', "").trim()))
+            command == "/confirm" -> CommandReply(meals.confirm(text.split(Regex("\\s+"), limit = 2).getOrNull(1).orEmpty().trim()))
             text.startsWith("/") -> CommandReply("Не знаю эту команду. Пришли /help.")
-            text.isNotBlank() -> CommandReply(meals.prepare(PcBrain(config, client).parse(text)))
-            else -> CommandReply("Пришли текст еды с весом и приёмом пищи. Фото и голос пока не подключены; API-ключ покупать не нужно.")
+            message.has("voice") -> {
+                requireUiPlanning(screen)
+                require(config.optBoolean("pc_consent")) { "Включи согласие на ИИ по подписке в приложении. Платный API не нужен." }
+                val voice = message.getJSONObject("voice")
+                require(voice.optInt("duration") in 1..120) { "Голосовое сообщение - до 120 секунд." }
+                val bytes = telegram.download(voice.getString("file_id"), voice.optLong("file_size"), 4_000_000)
+                val draft = PcBrain(config, client, store).parse(text.ifBlank { "Разбери голосовое описание еды." }, voice = bytes)
+                CommandReply("Распознал: ${draft.optString("transcript").take(500)}\n\n" + meals.prepare(draft))
+            }
+            message.has("photo") -> {
+                requireUiPlanning(screen)
+                require(config.optBoolean("pc_consent")) { "Включи согласие на ИИ по подписке в приложении. Платный API не нужен." }
+                val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
+                require(photo != null) { "Размер фотографии - до 4 МБ." }
+                val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
+                CommandReply(meals.prepare(PcBrain(config, client, store).parse(text.ifBlank { "Определи еду на фото. Уточни вес в граммах и приём пищи, если они не указаны." }, photo = bytes)))
+            }
+            text.isNotBlank() -> {
+                requireUiPlanning(screen)
+                CommandReply(meals.prepare(PcBrain(config, client, store).parse(text)))
+            }
+            else -> CommandReply("Пришли текст, фото с подписью о весе и приёме пищи или голос. API-ключ не нужен.")
         }
+    }
+    private fun requireUiPlanning(screen: FatUi) {
+        require(store.get("write_intent").isBlank()) { "Есть непроверенная запись. Сначала проверь дневник и сними блокировку в приложении. ИИ пока не вызывался." }
+        screen.requireReady()
     }
 }

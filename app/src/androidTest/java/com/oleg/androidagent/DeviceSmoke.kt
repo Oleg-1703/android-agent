@@ -83,7 +83,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("ui-live-read", "pc-live-draft", "ui-reviewed-write")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("ui-live-read", "ui-live-ru-read", "ui-command-contract", "pc-live-draft", "ui-reviewed-write")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -91,6 +91,92 @@ class DeviceSmoke : Instrumentation() {
             val store = SecretStore(targetContext)
             val marker = "device-smoke-not-a-secret"
             when (phase) {
+                "pc-live-health" -> {
+                    val file = File(targetContext.filesDir, "test-config.json")
+                    val config = try { JSONObject(file.readText()) } finally { file.delete() }
+                    check(!config.has("bot_token"))
+                    val brain = PcBrain(config, Http.client())
+                    val health = brain.check()
+                    if (health.limited) {
+                        try { brain.parse("lunch banana100g"); error("Expected cached subscription limit") }
+                        catch (e: IllegalArgumentException) { check(e.message.orEmpty().contains("лимит подписки")) }
+                    }
+                    result.putString("stream", "PASS: real paired HTTPS PC health; subscription_limited=${health.limited}; reset=${health.reset}; no Telegram or diary actions\n")
+                }
+                "ui-command-contract" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val transport = Http.client().newBuilder().addInterceptor { error("No bot, API or model request expected") }.build()
+                    val config = JSONObject()
+                    val commands = AgentCommands(store, config, FatSecretApi(config, transport), transport, FatUi(targetContext))
+                    val telegram = TelegramApi("999999:" + "fixture".repeat(5), transport)
+                    fun command(text: String) = commands.handle(JSONObject().put("text", text), telegram)
+                    check(command("Помощь").text.contains("Developer-ключи не нужны"))
+                    check(command("/meal обед банан=100").text.contains("/pick"))
+                    check(command("/pick 1 1").text.contains("/confirm"))
+                    val nonce = JSONObject(store.get("ui_pending")).getString("nonce")
+                    try { command("/confirm $nonce-invalid"); error("Wrong confirmation accepted") } catch (_: IllegalArgumentException) {}
+                    check(store.get("write_intent").isBlank())
+                    check(command("Отмена").text.contains("отменён"))
+                    check(store.get("ui_pending").isBlank())
+                    check(command("/today").text.contains("ккал"))
+                    check(command("/stop").stop)
+                    result.putString("stream", "PASS: actual production command dispatcher help/Russian short meal/pick/invalid confirm/cancel/today/stop controls real FatSecret without API keys or any bot/model request; diary unchanged\n")
+                }
+                "pc-contract" -> {
+                    val values = mutableMapOf<String, String>()
+                    val memory = object : StateStore {
+                        override fun get(key: String) = values[key].orEmpty()
+                        override fun put(key: String, value: String) { values[key] = value }
+                    }
+                    val config = JSONObject().put("pc_url", "https://pc.example.invalid/")
+                        .put("pc_pairing", "fixture-pairing-".repeat(3)).put("pc_consent", true)
+                    val id = "b8fac2e7-8546-46bc-b55a-600d45c8a461"
+                    val image = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+                    val photo = java.io.ByteArrayOutputStream().also { image.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                    image.recycle()
+                    var calls = 0
+                    val transport = Http.client().newBuilder().addInterceptor { chain ->
+                        val buffer = okio.Buffer()
+                        requireNotNull(chain.request().body).writeTo(buffer)
+                        val payload = JSONObject(buffer.readUtf8())
+                        calls++
+                        val response = when (calls) {
+                            1 -> {
+                                val actual = android.util.Base64.decode(payload.getJSONObject("image").getString("data"), android.util.Base64.NO_WRAP)
+                                check(actual.contentEquals(photo))
+                                JSONObject().put("question", "Какой приём пищи?").put("conversation", id)
+                            }
+                            2 -> {
+                                check(payload.getString("conversation") == id && payload.getString("text") == "lunch")
+                                Meals.parse("/meal ${java.time.LocalDate.now()} lunch banana=100")
+                            }
+                            3 -> {
+                                check(payload.has("voice") && !payload.has("image"))
+                                Meals.parse("/meal ${java.time.LocalDate.now()} lunch banana=100").put("transcript", "banana 100g lunch")
+                            }
+                            else -> error("Unexpected request")
+                        }
+                        okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, response.toString())).build()
+                    }.build()
+                    val brain = PcBrain(config, transport, memory)
+                    try { brain.parse("100g", photo = photo); error("Expected clarification") }
+                    catch (e: IllegalArgumentException) { check(e.message == "Какой приём пищи?") }
+                    check(memory.get("pc_dialogue") == id)
+                    check(brain.parse("lunch").getString("meal") == "lunch")
+                    check(memory.get("pc_dialogue").isBlank())
+                    check(brain.parse("voice", voice = "RIFFfixture".toByteArray()).getString("transcript").contains("100g"))
+                    config.put("pc_consent", false)
+                    try { brain.parse("food"); error("Consent bypass") } catch (_: IllegalArgumentException) {}
+                    check(calls == 3)
+                    val badPairing = "Ж".repeat(40)
+                    config.put("pc_consent", true).put("pc_pairing", badPairing)
+                    try { brain.parse("food"); error("Unicode pairing accepted") }
+                    catch (e: IllegalArgumentException) { check(!e.message.orEmpty().contains(badPairing)) }
+                    check(calls == 3)
+                    result.putString("stream", "PASS: Android PNG/voice payloads, clarification context and consent guard with mock PC transport; no live model, Telegram or diary write\n")
+                }
                 "ui-reviewed-write" -> {
                     check(reviewedTest) { "Requires the user's explicit Banana 1g lunch test approval" }
                     check(store.get("write_intent").isBlank()) { "Never replay an uncertain test write; verify and acknowledge manually" }
@@ -110,7 +196,7 @@ class DeviceSmoke : Instrumentation() {
                     ui.diary()
                     result.putString("stream", "PASS: explicitly reviewed Banana 1g lunch test clicked SAVE exactly once; uncertain-write lock retained; inspect and remove ONLY this test entry before clearing receipt\n")
                 }
-                "ui-live-read", "pc-live-draft" -> {
+                "ui-live-read", "ui-live-ru-read", "pc-live-draft" -> {
                     check(!AgentService.workerActive)
                     waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
                     val ui = FatUi(targetContext)
@@ -121,7 +207,7 @@ class DeviceSmoke : Instrumentation() {
                         val config = try { JSONObject(file.readText()) } finally { file.delete() }
                         check(!config.has("bot_token"))
                         PcBrain(config, Http.client()).parse("Lunch: banana 100g")
-                    } else Meals.parse("/meal ${java.time.LocalDate.now()} lunch banana=100")
+                    } else Meals.parse("/meal ${java.time.LocalDate.now()} lunch ${if (phase == "ui-live-ru-read") "банан" else "banana"}=100")
                     val engine = UiMealEngine(store, ui)
                     check(engine.prepare(meal).contains("/pick"))
                     check(engine.pick(1, 1).contains("/confirm"))

@@ -9,7 +9,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--adb", type=Path, required=True)
     parser.add_argument("--pc-config", type=Path)
+    parser.add_argument("--russian", action="store_true")
+    parser.add_argument("--commands", action="store_true")
     args = parser.parse_args()
+    if sum((bool(args.pc_config), args.russian, args.commands)) > 1:
+        parser.error("Choose one test mode")
     base = [str(args.adb), "-s", "emulator-5556"]
 
     def adb(*arguments):
@@ -34,7 +38,7 @@ def main():
             adb("shell", "run-as", "com.oleg.androidagent", "cp", "/data/local/tmp/android-agent-pc-test.json", "files/test-config.json")
         finally:
             adb("shell", "rm", "/data/local/tmp/android-agent-pc-test.json")
-    phase = "pc-live-draft" if args.pc_config else "ui-live-read"
+    phase = "pc-live-draft" if args.pc_config else "ui-command-contract" if args.commands else "ui-live-ru-read" if args.russian else "ui-live-read"
     command = base + ["shell", "am", "instrument", "-r", "-w", "-e", "phase", phase,
                       "com.oleg.androidagent.test/com.oleg.androidagent.DeviceSmoke"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")

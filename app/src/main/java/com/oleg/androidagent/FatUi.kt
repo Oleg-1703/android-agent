@@ -74,10 +74,14 @@ class FatUi(private val context: Context) : MealScreen {
             if (try { main(test) } catch (_: IllegalArgumentException) { false }) return
             SystemClock.sleep(200)
         }
-        throw IllegalArgumentException("FatSecret не открыл ожидаемый экран. Ничего не сохранено; проверь приложение.")
+        throw IllegalArgumentException("FatSecret не открыл ожидаемый экран. Запрос остановлен. Проверь дневник перед повторной отправкой; автоматического повтора не было.")
+    }
+    fun requireReady() = main {
+        require(FatAccessibilityService.instance != null) { "Включи специальные возможности Android Agent в настройках телефона." }
+        require(!context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) { "Разблокируй телефон. Агент не обходит блокировку экрана." }
     }
     fun diary(allowDraft: Boolean = false) {
-        main { requireNotNull(FatAccessibilityService.instance); require(!context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) }
+        requireReady()
         val intent = requireNotNull(context.packageManager.getLaunchIntentForPackage(FatAccessibilityService.FATSECRET_PACKAGE)) { "Установи FatSecret." }
         context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         waitFor { root().packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE }
@@ -102,38 +106,71 @@ class FatUi(private val context: Context) : MealScreen {
             "Выбери «Сегодня» в дневнике FatSecret. Агент не будет угадывать дату."
         }
     }
-    fun today(): String {
-        diary(); requireToday()
-        return main {
-            val meals = text("food_journal_heading_row_title")
-            val calories = text("food_journal_heading_row_total_calories")
-            "Сводка с экрана FatSecret за сегодня:\n" + meals.mapIndexed { i, name -> "$name: ${calories.getOrNull(i) ?: "?"} ккал" }.joinToString("\n") +
-                "\nПоказаны видимые разделы дневника. Полный состав - в FatSecret."
+    private fun scrollDiary(forward: Boolean): Boolean {
+        val moved = main {
+            val list = nodes("food_journal_new_body").filter { it.isScrollable }
+            require(list.size == 1) { "Не найден список дневника. Открой дневник FatSecret." }
+            list.single().performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
         }
+        if (moved) SystemClock.sleep(250)
+        return moved
+    }
+    private fun top() { for (i in 0 until 12) if (!scrollDiary(false)) return }
+    fun today(): String {
+        diary(); requireToday(); top()
+        val meals = linkedMapOf<String, String>()
+        for (i in 0 until 12) {
+            main {
+                for (heading in nodes("food_journal_heading_row_title")) {
+                    val holder = heading.parent ?: continue
+                    require(holder.viewIdResourceName == prefix + "food_journal_add_food_holder")
+                    val name = heading.text.toString().trim().take(100)
+                    val calories = holder.findAccessibilityNodeInfosByViewId(prefix + "food_journal_heading_row_total_calories")
+                        .singleOrNull()?.text?.toString()?.trim().orEmpty()
+                    if (calories.isNotBlank()) meals[name] = "$calories ккал"
+                    else if (name !in meals) meals[name] = "значение не показано"
+                }
+            }
+            if (!scrollDiary(true)) break
+        }
+        require(meals.isNotEmpty()) { "Не удалось прочитать разделы дневника." }
+        return "Сводка с экрана FatSecret за сегодня:\n" + meals.entries.joinToString("\n") { "${it.key}: ${it.value}" } +
+            "\nЭто сводка разделов, полный состав - в FatSecret."
     }
     override fun search(meal: String, query: String): List<Row> {
         require(meal in Meals.types && query.length in 2..150)
-        diary(); requireToday()
-        main {
-            val labels = when(meal) {
+        diary(); requireToday(); top()
+        val labels = when(meal) {
                 "breakfast" -> setOf("breakfast", "завтрак")
                 "lunch" -> setOf("lunch", "обед")
                 "dinner" -> setOf("dinner", "ужин")
                 else -> setOf("snacks/other", "перекус/другое", "перекус", "другое")
             }
-            val target = nodes("food_journal_heading_row_title").filter { it.text?.toString()?.lowercase() in labels }
-            require(target.size == 1) { "Прокрути дневник так, чтобы нужный приём пищи был виден." }
-            click(target.single())
+        var opened = false
+        for (i in 0 until 12) {
+            opened = main {
+                val target = nodes("food_journal_heading_row_title").filter { it.text?.toString()?.lowercase() in labels }
+                require(target.size <= 1) { "Неоднозначный раздел дневника." }
+                if (target.isEmpty()) false else { click(target.single()); true }
+            }
+            if (opened || !scrollDiary(true)) break
         }
+        require(opened) { "Нужный приём пищи не найден в дневнике FatSecret." }
         waitFor { nodes("edit_text").size == 1 }
+        main {
+            require(FatUiDate.matches(text("actionbar_subtitle").singleOrNull().orEmpty(), java.time.LocalDate.now())) {
+                "Дата на экране FatSecret не совпадает с сегодняшней или её формат неизвестен. Проверь дату в приложении."
+            }
+        }
         setText("edit_text", query)
         waitFor { nodes("auto_suggestion_row_image_row_label").isNotEmpty() && text("edit_text").singleOrNull() == query }
         main {
             val suggestions = nodes("auto_suggestion_row_image_row_label")
             if (suggestions.isNotEmpty()) {
                 val exact = suggestions.filter { it.text?.toString()?.trim()?.equals(query.trim(), true) == true }
-                require(exact.size == 1) { "Поиск предложил другие названия. Уточни продукт по подсказке в FatSecret." }
-                click(exact.single())
+                require(exact.size <= 1) { "Неоднозначная подсказка поиска FatSecret." }
+                // FatSecret may translate a query. This opens candidates, never picks a food.
+                click(exact.singleOrNull() ?: suggestions.first())
             }
         }
         waitFor { nodes("title_description").isNotEmpty() }
@@ -205,6 +242,7 @@ class FatUi(private val context: Context) : MealScreen {
             require(commit.size == 1)
             click(commit.single())
         }
+        waitFor { nodes("date_in_navigation_bar").size == 1 && nodes("multi_add_save_section_holder").isEmpty() }
     }
     override fun leaveDraft() { diary(allowDraft = true) }
 }

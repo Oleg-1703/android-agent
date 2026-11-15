@@ -2,7 +2,7 @@
 <resources>
     <string name="accessibility_description">Локальная проверка экрана FatSecret для экспериментальной автоматизации.</string>
 
-    <string name="app_title">Агент дневника питания</string>
+    <string name="app_title">Агент питания</string>
     <string name="tab_home">Главная</string>
     <string name="tab_telegram">Telegram</string>
     <string name="tab_fatsecret">FatSecret</string>
@@ -111,12 +111,13 @@
     <string name="fs_title">FatSecret</string>
     <string name="fs_get_keys">Получить developer-ключи</string>
     <string name="fs_get_keys_help">Ключи выдаёт FatSecret после регистрации приложения. У Basic есть бесплатный доступ с ограничениями; поиск продуктов - по базе США. Вход в свой дневник выполняется отдельно ниже.</string>
-    <string name="fs_intro">Агент управляет обычным приложением FatSecret через специальные возможности Android. Developer-доступ не нужен.</string>
+    <string name="fs_intro">Обычный FatSecret, без developer-ключей и OAuth.</string>
     <string name="fs_screen_failed">Не удалось прочитать экран. Разблокируй телефон, включи специальные возможности Android Agent и проверь вход в FatSecret.</string>
-    <string name="pc_consent">Разрешаю отправлять текст еды на мой ПК и в Claude</string>
+    <string name="pc_consent">Разрешаю отправлять текст и фото еды на мой ПК и в Claude, а голос распознавать на ПК и отправлять в Claude полученный текст</string>
     <string name="row_screen_ready">Специальные возможности включены. Войди в FatSecret и разблокируй экран.</string>
     <string name="row_screen_needed">Включи специальные возможности Android Agent. Developer-ключи не нужны.</string>
-    <string name="row_pc_on">ПК подключён в настройках. Для ИИ оставь помощник и ПК включёнными.</string>
+    <string name="row_pc_on">Настройки ПК сохранены. Проверь связь и оставь помощник включённым.</string>
+    <string name="pc_check_failed">ПК недоступен. Проверь HTTPS-адрес, код сопряжения и работу помощника.</string>
     <string name="row_pc_off">ИИ через подписку на ПК. Без него доступна команда /meal.</string>
     <string name="fs_keys_title">Ключи разработчика</string>
     <string name="fs_key">Consumer Key</string>
@@ -154,7 +155,7 @@
 
     <!-- ai -->
     <string name="ai_title">ИИ (по желанию)</string>
-    <string name="ai_intro">Свободный текст через текущую подписку Claude на ПК. Без ИИ доступна команда /meal. Фото и голос в этом режиме пока не подключены.</string>
+    <string name="ai_intro">Твоя подписка на ПК. Без API-ключа. Без ИИ работает /meal.</string>
     <string name="ai_consent">Разрешаю отправлять текст, фото и голос из моего чата выбранному ИИ-провайдеру (может быть платно)</string>
     <string name="ai_url">Адрес API (OpenAI-совместимый, только HTTPS)</string>
     <string name="ai_key">Ключ API</string>
@@ -178,7 +179,7 @@
     <string name="help_bg_body">Автозапуск после перезагрузки не гарантируется: после перезагрузки или принудительной остановки откройте приложение и нажмите «Запустить». На Realme и подобных прошивках откройте настройки приложения, разрешите работу в фоне и отключите ограничения батареи.</string>
     <string name="help_app_settings">Настройки приложения и батареи</string>
     <string name="help_tools_title">Дополнительно</string>
-    <string name="help_acc_body">Специальные возможности для работы через API не нужны, включать их не требуется. Раздел оставлен только для экспериментальной автоматизации.</string>
+    <string name="help_acc_body">Для управления приложением FatSecret включи специальные возможности Android Agent и разблокируй экран. Developer-ключи не нужны. Неизвестные экраны останавливают выполнение.</string>
     <string name="help_acc_open">Настройки спецвозможностей</string>
     <string name="help_open_fs">Открыть приложение FatSecret</string>
     <string name="help_no_screen">Не удалось открыть этот экран настроек на телефоне.</string>
@@ -201,10 +202,8 @@
     <string name="diag_contact">Последний контакт</string>
     <string name="diag_token">Токен сохранён, формат верен</string>
     <string name="diag_chat">ID чата задан</string>
-    <string name="diag_fs_keys">Ключи FatSecret сохранены</string>
-    <string name="diag_fs_token">Токен FatSecret сохранён</string>
-    <string name="diag_ai">Согласие на ИИ</string>
-    <string name="diag_ai_key">Ключ ИИ сохранён</string>
+    <string name="diag_accessibility">Специальные возможности включены</string>
+    <string name="diag_pc">Настройки ИИ по подписке сохранены</string>
     <string name="diag_write">Блокировка неясной записи</string>
     <string name="diag_notif">Уведомления разрешены</string>
     <string name="diag_battery">Без ограничений батареи</string>

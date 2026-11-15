@@ -54,6 +54,24 @@ if ($Action -eq 'start') {
 $serverProcess = OwnedProcess 'server'
 $tunnelProcess = OwnedProcess 'tunnel'
 Write-Output ('PC helper running: ' + [bool]$serverProcess + '; HTTPS tunnel running: ' + [bool]$tunnelProcess)
+if ($serverProcess -and (Test-Path -LiteralPath $configPath)) {
+    $health = $null
+    $attempts = if ($Action -eq 'start') { 8 } else { 1 }
+    for ($attempt = 0; $attempt -lt $attempts; $attempt++) {
+        try {
+            $credentials = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/health' -Headers @{ Authorization = 'Bearer ' + $credentials.pairing_token } -TimeoutSec 2
+            break
+        } catch {
+            if ($attempt + 1 -lt $attempts) { Start-Sleep -Milliseconds 300 }
+        }
+    }
+    Write-Output ('HTTP ready: ' + [bool]($health -and $health.status -eq 'ready'))
+    if ($health -and $health.subscription_limited) {
+        $reset = if ($health.reset -match '^([01][0-9]|2[0-3]):[0-5][0-9]$') { $health.reset } else { 'unknown' }
+        Write-Output ('Subscription limit, reset at PC local time: ' + $reset)
+    }
+}
 if ($Action -eq 'pair') {
     if (!$serverProcess -or !$tunnelProcess) { throw 'Start the helper first.' }
     $log = Get-Content -LiteralPath (Join-Path $statePath 'tunnel.stderr.log') -Raw
