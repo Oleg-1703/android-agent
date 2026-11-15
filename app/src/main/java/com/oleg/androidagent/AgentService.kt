@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.SystemClock
 import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -65,7 +66,7 @@ class AgentService : Service() {
             val owner = config.optString("chat_id").toLongOrNull() ?: 0L
             require(owner > 0)
             val token = config.optString("bot_token")
-            val telegram = TelegramApi(token, client)
+            val telegram = TelegramApi(token, client, TelegramClock { SystemClock.elapsedRealtime() })
             val scope = MessageDigest.getInstance("SHA-256").digest(token.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
             val offsetKey = "offset_$scope"
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
@@ -101,9 +102,9 @@ class AgentService : Service() {
                         store.put(offsetKey, offset.toString())
                         val message = update.optJSONObject("message") ?: continue
                         if (!TelegramAccess.allowed(message, owner)) continue
-                        val age = System.currentTimeMillis() / 1000 - message.optLong("date")
-                        if (age !in 0..300) {
-                            telegram.send(owner, "Этот запрос пришёл больше пяти минут назад или время телефона неверно. Я его не выполнял. Пришли команду ещё раз.")
+                        val rejection = TelegramFreshness.rejection(message, telegram.serverTimeSeconds())
+                        if (rejection != null) {
+                            telegram.send(owner, rejection.reply)
                             continue
                         }
                         store.put("last_message", System.currentTimeMillis().toString())

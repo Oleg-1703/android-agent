@@ -14,9 +14,10 @@ class AgentCommands(
     private val client: OkHttpClient
 ) {
     private val engine = MealEngine(store, diary)
+    private val apiConnected: Boolean get() = config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()
     private fun requireDiary() {
-        require(config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()) {
-            "Telegram работает. Для дневника открой приложение на телефоне: FatSecret → подключить существующий аккаунт. ИИ для просмотра дневника не нужен."
+        require(apiConnected) {
+            "Telegram работает. Управление установленным FatSecret через экран ещё в разработке и недоступно в этой сборке. Developer-ключи для этого сценария не нужны. Подключение через API - отдельный экспериментальный режим."
         }
     }
     fun handle(message: JSONObject, telegram: TelegramApi): CommandReply {
@@ -27,7 +28,8 @@ class AgentCommands(
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> return CommandReply(
                 "Я на связи. Управление идёт прямо с Android.\n\n" +
                     "/today - дневник за сегодня\n/status - состояние\n/cancel - отменить подготовленную еду\n/stop - остановить агента\n\n" +
-                    "Добавить еду без ИИ:\n/meal ${LocalDate.now()} lunch рис варёный=150;курица=200\n" +
+                    if (!apiConnected) "Управление установленным FatSecret через экран ещё в разработке и недоступно в этой сборке. Developer-ключи для него не нужны. Сейчас можно проверить связь и управление агентом командами выше."
+                    else "Экспериментальный API-режим. Добавить еду без ИИ:\n/meal ${LocalDate.now()} lunch рис варёный=150;курица=200\n" +
                     "Приём пищи: breakfast (завтрак), lunch (обед), dinner (ужин), other (перекус).\n" +
                     "Я предложу продукты для /pick, затем попрошу /confirm с кодом. Без подтверждения запись не появится. " +
                     "Фото и голос доступны после отдельной настройки ИИ на телефоне."
@@ -35,7 +37,7 @@ class AgentCommands(
             command == "/status" || natural == "статус" -> return CommandReply(
                 "Агент работает. " + (if (store.get("write_intent").isNotBlank())
                     "Есть непроверенная запись: проверь дневник и сними блокировку в приложении. " else "Непроверенных записей нет. ") +
-                    (if (config.optString("fs_token").isBlank()) "FatSecret ещё не подключён. " else "FatSecret подключён. ") + store.get("last_result")
+                    (if (!apiConnected) "Управление экраном FatSecret ещё в разработке. " else "Экспериментальный API FatSecret настроен. ") + store.get("last_result")
             )
             command == "/stop" -> return CommandReply("Агент остановлен. Запустить снова можно в приложении на телефоне.", stop = true)
             command == "/cancel" || natural == "отмена" -> return CommandReply(engine.cancel())

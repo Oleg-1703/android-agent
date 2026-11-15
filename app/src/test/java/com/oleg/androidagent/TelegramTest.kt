@@ -79,7 +79,7 @@ class TelegramTest {
         val failure = assertThrows(IllegalArgumentException::class.java) {
             commands.handle(JSONObject().put("text", "/today"), TelegramApi(token, client))
         }
-        assertTrue(failure.message!!.contains("подключить существующий аккаунт"))
+        assertTrue(failure.message!!.contains("Developer-ключи для этого сценария не нужны"))
         assertEquals(0, diary.reads)
         assertEquals(0, diary.writes)
     }

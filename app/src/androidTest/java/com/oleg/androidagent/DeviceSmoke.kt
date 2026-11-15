@@ -3,6 +3,7 @@ package com.oleg.androidagent
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
@@ -33,6 +34,36 @@ class DeviceSmoke : Instrumentation() {
         waitForIdleSync(); SystemClock.sleep(300)
     }
     private fun secure(activity: Activity) = activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0
+    private fun verifySignInStartsBrowser(activity: Activity, store: SecretStore) {
+        val filter = IntentFilter(Intent.ACTION_VIEW).apply {
+            addDataScheme("https"); addDataAuthority("authentication.fatsecret.com", null)
+            addDataPath("/oauth/authorize", android.os.PatternMatcher.PATTERN_LITERAL)
+        }
+        val monitor = addMonitor(filter, ActivityResult(Activity.RESULT_CANCELED, null), true)
+        // Replace transport only inside the test APK; the real button, storage and OAuth code still run.
+        val field = MainActivity::class.java.getDeclaredField("client").apply { isAccessible = true }
+        val original = field.get(activity) as okhttp3.OkHttpClient
+        val mock = original.newBuilder().addInterceptor { chain ->
+            check(chain.request().url.host == "authentication.fatsecret.com" && chain.request().url.encodedPath == "/oauth/request_token")
+            okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                .body(okhttp3.ResponseBody.create(null, "oauth_token=fixture&oauth_token_secret=fixture-secret&oauth_callback_confirmed=true")).build()
+        }.build()
+        try {
+            runOnMainSync {
+                field.set(activity, mock)
+                val fields = views(activity.window.decorView).filterIsInstance<EditText>()
+                fields[0].setText("fixture-key"); fields[1].setText("fixture-secret")
+            }
+            click(activity, targetContext.getString(R.string.fs_open_login))
+            waitUntil("Sign-in button did not start browser authorization") { monitor.hits > 0 }
+            check(store.config().getString("fs_key") == "fixture-key")
+            check(store.get("oauth_pending").isNotBlank())
+        } finally {
+            removeMonitor(monitor)
+            runOnMainSync { field.set(activity, original) }
+            store.put("config", ""); store.put("oauth_pending", "")
+        }
+    }
     private fun capture(activity: Activity, name: String) {
         check(SecretStore(targetContext).config().length() == 0) { "Screenshots require empty configuration" }
         runOnMainSync { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
@@ -79,6 +110,14 @@ class DeviceSmoke : Instrumentation() {
                         File(targetContext.cacheDir, "diagnostics.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle()
                         click(activity, "Назад")
                         runOnMainSync { check(secure(activity)) }
+                        click(activity, "FatSecret")
+                        click(activity, targetContext.getString(R.string.fs_open_login))
+                        runOnMainSync {
+                            val error = views(activity.window.decorView).filterIsInstance<TextView>()
+                                .first { it.text.toString() == targetContext.getString(R.string.fs_need_keys) }
+                            check(error.getGlobalVisibleRect(android.graphics.Rect())) { "Sign-in error is hidden outside viewport" }
+                        }
+                        verifySignInStartsBrowser(activity, store)
                         click(activity, "Telegram")
                         click(activity, "Сохранить")
                         check(store.config().length() == 0) { "Invalid form was persisted" }
@@ -98,8 +137,55 @@ class DeviceSmoke : Instrumentation() {
                         }
                         click(activity, "Сохранить")
                         check(store.config().getString("bot_token") == fixture) { "Blank token overwrote saved secret" }
-                        result.putString("stream", "PASS: five Russian tabs; start/invalid-owner guards; encrypted form save and blank-secret retention; safe diagnostics; secure flag restored; empty-config screenshots\n")
+                        result.putString("stream", "PASS: five Russian tabs; visible sign-in feedback; real sign-in button auto-saves keys and starts browser Intent with mock server response; owner guards; blank-secret retention; secure diagnostics\n")
                     } finally { store.put("config", ""); runOnMainSync { activity.finish() } }
+                }
+                "fatsecret" -> {
+                    check(store.config().length() == 0 && !AgentService.workerActive)
+                    val file = File(targetContext.filesDir, "test-config.json")
+                    val config = try { JSONObject(file.readText()) } finally { file.delete() }
+                    require(config.optString("fs_key").isNotBlank() && config.optString("fs_secret").isNotBlank())
+                    val filter = IntentFilter(Intent.ACTION_VIEW).apply {
+                        addDataScheme("https"); addDataAuthority("authentication.fatsecret.com", null)
+                        addDataPath("/oauth/authorize", android.os.PatternMatcher.PATTERN_LITERAL)
+                    }
+                    val monitor = addMonitor(filter, ActivityResult(Activity.RESULT_CANCELED, null), true)
+                    val activity = launch()
+                    try {
+                        click(activity, "FatSecret")
+                        runOnMainSync {
+                            val fields = views(activity.window.decorView).filterIsInstance<EditText>()
+                            fields[0].setText(config.getString("fs_key")); fields[1].setText(config.getString("fs_secret"))
+                        }
+                        click(activity, targetContext.getString(R.string.fs_open_login))
+                        val deadline = SystemClock.elapsedRealtime() + 90_000
+                        var rejected = false
+                        while (monitor.hits == 0 && !rejected && SystemClock.elapsedRealtime() < deadline) {
+                            runOnMainSync {
+                                rejected = views(activity.window.decorView).filterIsInstance<TextView>().any {
+                                    it.isShown && (it.text.startsWith("FatSecret отклонил") || it.text.toString() == targetContext.getString(R.string.fs_failed))
+                                }
+                            }
+                            SystemClock.sleep(200)
+                        }
+                        check(store.config().getString("fs_key") == config.getString("fs_key")) { "Unsaved key was not saved on sign-in" }
+                        if (monitor.hits > 0) {
+                            check(store.get("oauth_pending").isNotBlank())
+                            result.putString("stream", "PASS: typed FatSecret keys auto-saved; live OAuth1 request token accepted; browser authorization Intent intercepted safely (no account login/write)\n")
+                        } else {
+                            check(rejected) { "No visible result from sign-in" }
+                            var code = "unknown"
+                            runOnMainSync {
+                                val text = views(activity.window.decorView).filterIsInstance<TextView>().firstOrNull { it.text.startsWith("FatSecret отклонил") }?.text?.toString().orEmpty()
+                                code = Regex("код ([0-9]+)").find(text)?.groupValues?.get(1) ?: "network"
+                            }
+                            result.putString("stream", "BLOCKED: sign-in feedback visible; FatSecret request-token rejected ($code); no browser/account/write success claimed\n")
+                        }
+                    } finally {
+                        removeMonitor(monitor)
+                        runOnMainSync { activity.finish() }; waitForIdleSync()
+                        store.put("config", ""); store.put("oauth_pending", "")
+                    }
                 }
                 "configure" -> {
                     check(!AgentService.workerActive && store.config().length() == 0) { "Use a clean stopped emulator" }
@@ -147,6 +233,12 @@ class DeviceSmoke : Instrumentation() {
                     val raw = targetContext.getSharedPreferences("agent_private", 0).getString("device_smoke", null)!!
                     check(!raw.contains(marker) && raw.contains(':'))
                     check(SecretStore(targetContext).get("device_smoke") == marker)
+                    val serverEpoch = java.time.Instant.now().plusSeconds(86_400).epochSecond
+                    val clock = TelegramClock { SystemClock.elapsedRealtime() }
+                    clock.observe(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(java.time.Instant.ofEpochSecond(serverEpoch).atZone(java.time.ZoneOffset.UTC)))
+                    check(TelegramFreshness.rejection(JSONObject().put("text", "/confirm fixture").put("date", serverEpoch + 1), clock.nowSeconds()) == null)
+                    check(TelegramFreshness.rejection(JSONObject().put("text", "Помощь"), null) == null)
+                    check(TelegramFreshness.rejection(JSONObject().put("text", "/confirm fixture").put("date", serverEpoch - 301), clock.nowSeconds()) == TelegramFreshness.Rejection.TOO_OLD)
                     store.put("service_state", "")
                     val activity = launch()
                     runOnMainSync { check(secure(activity)) }

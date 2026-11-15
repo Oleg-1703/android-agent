@@ -21,7 +21,7 @@ object Http {
                 response.newBuilder().header("Retry-After", "1").build()
             else response
         }.build()
-    fun text(client: OkHttpClient, request: Request, limit: Long = 2_000_000): String {
+    fun text(client: OkHttpClient, request: Request, limit: Long = 2_000_000, onHeaders: ((okhttp3.Headers) -> Unit)? = null): String {
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 var retry = response.header("Retry-After")?.toLongOrNull() ?: 0
@@ -34,6 +34,7 @@ object Http {
                 } catch (_: Exception) { /* Never expose raw remote error bodies. */ }
                 throw ApiFailure(response.code, retry)
             }
+            onHeaders?.invoke(response.headers)
             val body = response.body ?: throw ApiFailure()
             require(body.contentLength() <= limit) { "Response too large" }
             val source = body.source()

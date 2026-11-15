@@ -230,6 +230,9 @@ class MainActivity : Activity() {
 
     private fun show(view: TextView, tone: Ui.Tone, msg: CharSequence) {
         view.text = msg; view.background = ui.tinted(tone); view.setTextColor(ui.color(tone.fg)); view.visibility = View.VISIBLE
+        view.post {
+            if (view.isShown) view.requestRectangleOnScreen(android.graphics.Rect(0, 0, view.width, view.height), true)
+        }
     }
 
     private fun pill(): TextView = ui.text("", 12f, bold = true).apply {
@@ -491,6 +494,7 @@ class MainActivity : Activity() {
         auth.add(heading(getString(R.string.fs_auth_title)))
         fsStatus = body("").apply { setTextColor(color(R.color.muted)) }
         auth.add(fsStatus, 6)
+        fsResult = resultView(); auth.add(fsResult, 12)
         auth.add(body(getString(R.string.fs_step1)), 12)
         auth.add(button(getString(R.string.fs_open_login), Ui.Style.SECONDARY) { fsAuthorize() }, 8)
         fsVerifier = field(getString(R.string.fs_verifier), secret = true)
@@ -499,7 +503,6 @@ class MainActivity : Activity() {
         auth.add(button(getString(R.string.fs_complete)) { fsComplete() }, 10)
         auth.add(body(getString(R.string.fs_step3)), 16)
         auth.add(button(getString(R.string.fs_read), Ui.Style.SECONDARY) { fsRead() }, 8)
-        fsResult = resultView(); auth.add(fsResult, 12)
         page.add(auth, 14)
 
         val off = card()
@@ -510,30 +513,36 @@ class MainActivity : Activity() {
         page
     }
 
-    private fun saveFatSecret() {
-        if (busy) { show(fsResult, Ui.Tone.WARN, getString(R.string.wait_busy)); return }
-        val c = try { store.config() } catch (_: Exception) { show(fsResult, Ui.Tone.ERR, getString(R.string.storage_broken)); return }
+    private fun saveFatSecret(): Boolean {
+        if (busy) { show(fsResult, Ui.Tone.WARN, getString(R.string.wait_busy)); return false }
+        val c = try { store.config() } catch (_: Exception) { show(fsResult, Ui.Tone.ERR, getString(R.string.storage_broken)); return false }
         val oldKey = c.optString("fs_key"); val oldSecret = c.optString("fs_secret")
         val key = fsKey.edit.text.toString().trim().ifEmpty { oldKey }
         val secret = fsSecret.edit.text.toString().trim().ifEmpty { oldSecret }
-        if (key.isEmpty() || secret.isEmpty()) { show(fsResult, Ui.Tone.ERR, getString(R.string.fs_need_both)); return }
+        if (key.isEmpty() || secret.isEmpty()) { show(fsResult, Ui.Tone.ERR, getString(R.string.fs_need_both)); return false }
         try {
             stopService(Intent(this, AgentService::class.java)); startedAt = 0
             c.put("fs_key", key).put("fs_secret", secret)
             if (oldKey != key || oldSecret != secret) { c.remove("fs_token"); c.remove("fs_token_secret"); store.put("oauth_pending", "") }
             store.put("config", c.toString()); store.put("pending", "")
-        } catch (_: Exception) { show(fsResult, Ui.Tone.ERR, getString(R.string.save_failed)); return }
+        } catch (_: Exception) { show(fsResult, Ui.Tone.ERR, getString(R.string.save_failed)); return false }
         fsKey.edit.setText(""); fsSecret.edit.setText("")
         show(fsResult, Ui.Tone.OK, getString(R.string.fs_keys_saved))
         refresh()
+        return true
     }
 
     private fun fsAuthorize() {
         if (busy) { show(fsResult, Ui.Tone.WARN, getString(R.string.wait_busy)); return }
-        if (!snap.fsKeys) { show(fsResult, Ui.Tone.WARN, getString(R.string.fs_need_keys)); return }
+        if ((fsKey.edit.text.isNotBlank() || fsSecret.edit.text.isNotBlank()) && !saveFatSecret()) return
+        val config = try { store.config() } catch (_: Exception) { show(fsResult, Ui.Tone.ERR, getString(R.string.storage_broken)); return }
+        if (config.optString("fs_key").isBlank() || config.optString("fs_secret").isBlank()) {
+            show(fsResult, Ui.Tone.WARN, getString(R.string.fs_need_keys)); return
+        }
         stopService(Intent(this, AgentService::class.java)); startedAt = 0
         background(fsResult, R.string.fs_failed) {
-            val token = FatSecretApi(store.config(), client).requestToken()
+            val token = try { FatSecretApi(config, client).requestToken() }
+            catch (e: ApiFailure) { return@background Outcome(Ui.Tone.ERR, getString(R.string.fs_api_failed, e.status)) }
             val url = "https://authentication.fatsecret.com/oauth/authorize?oauth_token=" + OAuth1.encode(token.getString("oauth_token"))
             if (!isDestroyed) store.put("oauth_pending", token.toString())
             Outcome(Ui.Tone.OK, getString(R.string.fs_browser_opened)) { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
