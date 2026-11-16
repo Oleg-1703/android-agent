@@ -64,6 +64,20 @@ def quota_reset(output: str) -> str | None:
     return f"{hour:02d}:{minute:02d}" if 0 <= hour <= 23 and 0 <= minute <= 59 else ""
 
 
+def quota_retry_delay(reset: str, now: dt.datetime | None = None) -> float:
+    if not reset:
+        return 60
+    now = now or dt.datetime.now()
+    hour, minute = map(int, reset.split(":"))
+    reset_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset_at <= now:
+        # Providers can report the old minute briefly after the actual reset.
+        if (now - reset_at).total_seconds() < 300:
+            return 60
+        reset_at += dt.timedelta(days=1)
+    return min(18000, (reset_at - now).total_seconds())
+
+
 def child_env() -> dict[str, str]:
     env = dict(os.environ)
     for name in list(env):
@@ -264,15 +278,7 @@ class Handler(BaseHTTPRequestHandler):
                 meal["transcript"] = transcript
             self.respond(200, meal)
         except SubscriptionLimit as error:
-            now = dt.datetime.now()
-            wait = 60
-            if error.reset:
-                hour, minute = map(int, error.reset.split(":"))
-                reset_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if reset_at <= now:
-                    reset_at += dt.timedelta(days=1)
-                wait = min(18000, (reset_at - now).total_seconds())
-            self.server.limit_until = time.monotonic() + wait
+            self.server.limit_until = time.monotonic() + quota_retry_delay(error.reset)
             self.server.reset_hint = error.reset
             self.respond(429, {"error": "subscription_limit", "reset": error.reset})
         except subprocess.TimeoutExpired:

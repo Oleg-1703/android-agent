@@ -1,7 +1,8 @@
 ﻿param(
     [ValidateSet('start', 'stop', 'status', 'pair')][string]$Action = 'status',
     [string]$ToolsRoot = "$env:USERPROFILE/.local/share/android-agent-tools",
-    [string]$Python = "$env:USERPROFILE/.local/bin/python3.14.exe"
+    [string]$Python = "$env:USERPROFILE/.local/bin/python3.14.exe",
+    [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -87,6 +88,7 @@ if ($Action -eq 'pair') {
 "@
     $pagePath = Join-Path $statePath 'pairing.html'
     [IO.File]::WriteAllText($pagePath, $page, [Text.UTF8Encoding]::new($false))
-    Start-Process -FilePath $pagePath
+    if (!$NoOpen) { Start-Process -FilePath $pagePath }
+    else { Write-Output ('Private pairing page prepared: ' + $pagePath) }
 }
 

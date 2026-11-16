@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import datetime as dt
 import unittest
 from unittest.mock import patch
 
@@ -111,6 +112,13 @@ class BrainTests(unittest.TestCase):
             self.assertEqual(response["error"], "subscription_limit")
             self.assertEqual(response["reset"], "00:40")
         self.assertEqual(model.call_count, 1)
+
+    def test_reset_boundary_does_not_create_a_five_hour_local_lock(self):
+        just_after = dt.datetime(2026, 11, 16, 0, 40, 3)
+        remaining = brain.quota_retry_delay("00:40", just_after)
+        self.assertGreater(remaining, 0)
+        self.assertLess(remaining, 120)
+        self.assertEqual(brain.quota_retry_delay("00:40", dt.datetime(2026, 11, 15, 23, 55)), 2700)
 
     @patch.object(brain.subprocess, "run")
     def test_cli_has_no_tools_no_persistence_and_no_paid_auth(self, run):
