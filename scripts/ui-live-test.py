@@ -11,9 +11,17 @@ def main():
     parser.add_argument("--pc-config", type=Path)
     parser.add_argument("--russian", action="store_true")
     parser.add_argument("--commands", action="store_true")
+    parser.add_argument("--metadata", action="store_true")
+    parser.add_argument("--photo", type=Path)
+    parser.add_argument("--voice", type=Path)
     args = parser.parse_args()
-    if sum((bool(args.pc_config), args.russian, args.commands)) > 1:
+    if sum((bool(args.pc_config), args.russian, args.commands, args.metadata)) > 1:
         parser.error("Choose one test mode")
+    if (args.photo and args.voice) or ((args.photo or args.voice) and not args.pc_config):
+        parser.error("Choose one media fixture with --pc-config")
+    media = args.photo or args.voice
+    if media and (not media.is_file() or media.stat().st_size > 4_000_000):
+        parser.error("Media fixture missing or above 4MB")
     base = [str(args.adb), "-s", "emulator-5556"]
 
     def adb(*arguments):
@@ -28,6 +36,7 @@ def main():
 
     def connect():
         adb("shell", "settings", "put", "secure", "enabled_accessibility_services", ":".join(others) or "null")
+        time.sleep(0.5)
         adb("shell", "settings", "put", "secure", "enabled_accessibility_services", ":".join(others + [component]))
         adb("shell", "settings", "put", "secure", "accessibility_enabled", "1")
 
@@ -38,7 +47,13 @@ def main():
             adb("shell", "run-as", "com.oleg.androidagent", "cp", "/data/local/tmp/android-agent-pc-test.json", "files/test-config.json")
         finally:
             adb("shell", "rm", "/data/local/tmp/android-agent-pc-test.json")
-    phase = "pc-live-draft" if args.pc_config else "ui-command-contract" if args.commands else "ui-live-ru-read" if args.russian else "ui-live-read"
+    if media:
+        adb("push", str(media), "/data/local/tmp/android-agent-media-test.bin")
+        try:
+            adb("shell", "run-as", "com.oleg.androidagent", "cp", "/data/local/tmp/android-agent-media-test.bin", "files/test-media.bin")
+        finally:
+            adb("shell", "rm", "/data/local/tmp/android-agent-media-test.bin")
+    phase = "pc-live-photo" if args.photo else "pc-live-voice" if args.voice else "pc-live-draft" if args.pc_config else "ui-metadata" if args.metadata else "ui-command-contract" if args.commands else "ui-live-ru-read" if args.russian else "ui-live-read"
     command = base + ["shell", "am", "instrument", "-r", "-w", "-e", "phase", phase,
                       "com.oleg.androidagent.test/com.oleg.androidagent.DeviceSmoke"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
@@ -56,6 +71,7 @@ def main():
             process.terminate()
             process.wait(timeout=10)
         adb("shell", "run-as", "com.oleg.androidagent", "rm", "-f", "files/test-config.json")
+        adb("shell", "run-as", "com.oleg.androidagent", "rm", "-f", "files/test-media.bin")
         connect()
 
 

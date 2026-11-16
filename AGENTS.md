@@ -32,4 +32,6 @@ Choose the next roadmap task independently, continue after the first commit, and
 
 Never remove the HTTP 503 no-replay interceptor or pre-write state commit without equivalent regression coverage. Do not add automatic create retries, automatic uncertain-write acknowledgement, broad app permissions, or LLM-driven confirmation.
 
+The only auxiliary window is TYPE_INPUT_METHOD of the currently selected DEFAULT_INPUT_METHOD. While FatSecret context/query remain verified, the recipe may click exactly one visible Search key in the lower half of that keyboard. Never click other keyboard actions or collect, log, persist or transmit keyboard suggestions or input history. Key labels may be compared only to locate that fixed Search action. No generic gestures or coordinates are allowed.
+
 The user logged into real FatSecret on emulator-5556 on 2026-11-15. Preserve this AVD/account data. No physical Realme is attached. Diary writes require reviewed confirmation. Never inject synthetic meals into the personal account without that confirmation.

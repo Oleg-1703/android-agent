@@ -276,7 +276,6 @@ class MainActivity : Activity() {
             } else show(feedback, Ui.Tone.WARN, getString(R.string.open_bot_check))
         }, 10)
         stateCard.add(feedback, 12)
-        page.add(stateCard)
 
         writeCard = card().apply { visibility = View.GONE; background = tinted(Ui.Tone.WARN) }
         writeCard.add(heading(getString(R.string.write_title)).apply { setTextColor(color(R.color.warn_fg)) })
@@ -284,6 +283,7 @@ class MainActivity : Activity() {
         writeCard.add(button(getString(R.string.write_ack), Ui.Style.SECONDARY) { acknowledge() }, 12)
         writeNote = resultView(); writeCard.add(writeNote, 10)
         page.add(writeCard, 14)
+        page.add(stateCard, 14)
 
         val setup = card()
         setup.add(heading(getString(R.string.setup_title)))
