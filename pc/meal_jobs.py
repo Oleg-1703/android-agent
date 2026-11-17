@@ -79,7 +79,7 @@ class Emulator:
         return result
 
     def instrument(self, phase):
-        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview"}:
+        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview", "diary-sections", "custom-cancel-dry-run"}:
             raise ValueError("Unsupported fixed executor phase")
         current = self.run("shell", "settings", "get", "secure", "enabled_accessibility_services").decode().strip()
         others = [s for s in current.split(":") if s and s != "null" and not s.startswith("com.oleg.androidagent/")]
@@ -124,7 +124,12 @@ class MealJobs:
     def get(self, key):
         with self.connection() as db:
             row = db.execute("SELECT state,result FROM jobs WHERE id=?", (key,)).fetchone()
-        return None if row is None else {"status": row[0], **json.loads(row[1])}
+        if row is None:
+            return None
+        result = {"status": row[0], **json.loads(row[1])}
+        if row[0] == "failed":
+            result["message"] = "Последний запрос завершился ошибкой.\n" + result.get("message", "Запись не выполнена.")
+        return result
 
     def submit(self, key, payload):
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32,64}", key):

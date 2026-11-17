@@ -87,7 +87,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -108,6 +108,31 @@ class DeviceSmoke : Instrumentation() {
                         JSONObject().put("name", it.name).put("detail", it.detail)
                     }).toString())
                     result.putString("stream", "PASS: explicit owner food lookup; nothing selected or saved\n")
+                }
+                "custom-cancel-dry-run" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val journal = JSONObject(store.get("write_intent"))
+                    val receipt = JSONObject(File(targetContext.filesDir, "custom-result.json").readText())
+                    check(receipt.getString("status") == "complete" && journal.getString("mode") == "custom" && !journal.has("preview"))
+                    check(journal.getString("execution_id") != receipt.getString("execution_id"))
+                    FatUi(targetContext).cancelCustomDraft()
+                    store.put("write_intent", "")
+                    result.putString("stream", "PASS: interrupted precommit dry-run cancelled; completed diary receipt preserved\n")
+                }
+                "diary-sections" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val screen = FatUi(targetContext)
+                    inspectedUi = screen
+                    val snapshots = org.json.JSONArray()
+                    for (meal in Meals.types) {
+                        val snapshot = screen.snapshot(meal)
+                        check(snapshot.complete)
+                        snapshots.put(snapshot.json())
+                    }
+                    File(targetContext.filesDir, "diary-sections.json").writeText(snapshots.toString())
+                    result.putString("stream", "PASS: all four complete diary sections, including empty last meal and nonempty meal; read-only\n")
                 }
                 "existing-preview" -> {
                     check(!AgentService.workerActive && store.get("write_intent").isBlank())
@@ -652,7 +677,7 @@ class DeviceSmoke : Instrumentation() {
             // Exception messages can contain request URLs. Export the type only.
             val site = t.stackTrace.filter { it.className.startsWith("com.oleg.androidagent.") }.take(5)
                 .joinToString(" <- ") { "${it.fileName}:${it.lineNumber}" }
-            result.putString("stream", "FAIL: ${t.javaClass.simpleName} in phase $phase$site\n${inspectedUi?.searchState.orEmpty()}\n")
+            result.putString("stream", "FAIL: ${t.javaClass.simpleName} in phase $phase$site\n${inspectedUi?.searchState.orEmpty()}\n${inspectedUi?.diaryRangeState.orEmpty()}\n")
             finish(Activity.RESULT_CANCELED, result)
         }
     }

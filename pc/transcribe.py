@@ -40,7 +40,7 @@ def main():
     if not args.audio or args.audio.stat().st_size > 4_000_000:
         parser.error("Audio file missing or too large")
     audio = decode_bounded(args.audio)
-    segments, info = model.transcribe(audio, beam_size=3, vad_filter=True, condition_on_previous_text=False)
+    segments, info = model.transcribe(audio, language="ru", beam_size=3, vad_filter=True, condition_on_previous_text=False)
     text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text or len(text) > 4000:
         raise ValueError("no_bounded_transcript")

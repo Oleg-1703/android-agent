@@ -83,6 +83,23 @@ class CustomMealEngineTest {
         try { engine.log(meal); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(0, screen.creations)
     }
+    @Test fun failedCleanupKeepsJournalAndPreservesOriginalFailure() {
+        val failing = object : CustomMealScreen by screen {
+            override fun commitStarted() = false
+            override fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String =
+                throw IllegalArgumentException("Original field failure")
+            override fun cancelCustomDraft() { throw IllegalStateException("Cleanup unavailable") }
+        }
+        try {
+            CustomMealEngine(store, failing) {}.log(plan())
+            fail()
+        } catch (error: IllegalArgumentException) {
+            assertEquals("Original field failure", error.message)
+            assertEquals("Cleanup unavailable", error.suppressed.single().message)
+        }
+        assertTrue(store.get("write_intent").isNotBlank())
+        assertEquals(0, screen.saves)
+    }
     @Test fun reconciliationOnlyReadsAndNeverRepeatsAWrite() {
         val before = screen.snapshot("breakfast")
         val item = plan().getJSONArray("items").getJSONObject(0)

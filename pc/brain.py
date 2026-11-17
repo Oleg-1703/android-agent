@@ -53,6 +53,10 @@ substitute. ONLY when the user explicitly asks to find/use an ALREADY EXISTING f
 set source=existing, omit nutrition and barcode, and preserve the exact requested
 food name including size/variant/brand (e.g. 'Ролл с курицей small'). Never estimate
 nutrition in this mode: the fixed executor requires a unique exact FatSecret match.
+For existing-food voice transcripts, never turn an unclear word into an extra
+ingredient, brand or size. Normalize clear inflections and size transliterations;
+otherwise preserve the unclear token so matching can fail safely. Never invent a
+different ingredient to make a transcript sound plausible.
 For a meal photo, estimate composition, weight and
 nutrition yourself, mark source=estimate and clearly describe uncertainty in notes.
 If exact meal totals are supplied without a dish name, use the neutral name

@@ -89,6 +89,14 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_plan({'meal': 'breakfast', 'items': [{'query': 'Food', 'grams': '200'}]})
 
+    def test_failed_status_is_history_not_a_new_write_attempt(self):
+        self.processor.return_value = {'status': 'failed', 'message': 'Screen unavailable'}
+        key = 'f' * 64
+        self.jobs.submit(key, {'text': 'food'})
+        self.assertIn('Последний запрос завершился ошибкой', self.done(key)['message'])
+        self.assertEqual(self.jobs.get(key), self.jobs.get(key))
+        self.assertEqual(self.processor.call_count, 1)
+
     def test_explicit_existing_food_uses_screen_values_without_model_macros(self):
         plan = {'meal': 'dinner', 'items': [{'query': 'Chicken roll small', 'grams': '200', 'source': 'existing'}]}
         self.assertEqual(validate_plan(plan), plan)

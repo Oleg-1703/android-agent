@@ -95,7 +95,12 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
                 else ui.createCustom(plan.getString("meal"), item, onContext)
             } catch (error: Exception) {
                 if (existing || (cleanupPrewrite && !ui.commitStarted())) {
-                    if (existing) ui.cancelExistingDraft() else ui.cancelCustomDraft()
+                    try {
+                        if (existing) ui.cancelExistingDraft() else ui.cancelCustomDraft()
+                    } catch (cleanupError: Exception) {
+                        error.addSuppressed(cleanupError)
+                        throw error
+                    }
                     store.put("write_intent", "")
                 }
                 throw error
