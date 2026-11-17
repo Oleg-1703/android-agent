@@ -17,10 +17,25 @@ class AgentService : Service() {
     companion object { @Volatile var workerActive = false; private set }
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var workerThread: Thread? = null
-    private val client = Http.client()
+    @Volatile private var idlePolling = false
+    @Volatile private var waitingForPhone = false
+    private val unlockSignal = UnlockSignal()
+    private var unlockEvents: PhoneUnlockEvents? = null
+    private val client = Http.client().newBuilder().addInterceptor { chain ->
+        if (!idlePolling || !chain.request().url.encodedPath.endsWith("/getUpdates")) chain.proceed(chain.request())
+        else {
+            val call = chain.call()
+            unlockSignal.begin(call)
+            try { chain.proceed(chain.request()) } finally { unlockSignal.end(call) }
+        }
+    }.build()
     @Volatile private var running = false
     private lateinit var store: SecretStore
-    override fun onCreate() { super.onCreate(); store = SecretStore(this) }
+    override fun onCreate() {
+        super.onCreate()
+        store = SecretStore(this)
+        unlockEvents = PhoneUnlockEvents(this) { if (running && waitingForPhone) unlockSignal.request() }
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun notification(message: String): Notification {
@@ -84,10 +99,21 @@ class AgentService : Service() {
                         }
                     }
                     // A successful getMe alone does not prove that this bot can poll.
-                    val updates = telegram.updates(offset, if (firstPoll) 0 else 45)
+                    waitingForPhone = commands.hasPendingPhone()
+                    val updates = try {
+                        idlePolling = true
+                        telegram.updates(offset, if (firstPoll) 0 else 45)
+                    } catch (error: java.io.IOException) {
+                        if (!running) break
+                        if (!unlockSignal.consume()) throw error
+                        idlePolling = false
+                        telegram.updates(offset, 0)
+                    } finally { idlePolling = false }
+                    unlockSignal.consume()
                     if (!running) break
                     store.put("last_contact", System.currentTimeMillis().toString())
-                    status("listening", "На связи. Открой бота в Telegram и отправь /help.")
+                    status("listening", if (commands.hasPendingPhone()) "Еда распознана. Жду разблокировки для записи, экран удерживать не нужно."
+                        else "На связи. Открой бота в Telegram и отправь /help.")
                     if (firstPoll) {
                         firstPoll = false
                         telegram.send(owner, "Android Agent запущен. Управление FatSecret через экран, без developer-ключей.\nНажми «Помощь», чтобы начать.")
@@ -112,7 +138,8 @@ class AgentService : Service() {
                         store.put("last_message", System.currentTimeMillis().toString())
                         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) {
                             val destination = if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "в эмуляторе ПК"
-                            telegram.send(owner, "Принял. Объединяю описание, фото и голос в один запрос. ИИ обработает его на ПК, еду запишу в FatSecret $destination.")
+                            val waiting = if (MealBatch.waitingForVoice(listOf(message))) "Фото без подписи: жду голосовой комментарий до 2,5 минут, экран можно выключить. Для обработки без этой паузы добавь подпись к фото." else "Соберу соседние сообщения за 8 секунд и отправлю ИИ на ПК. Экран можно выключить."
+                            telegram.send(owner, "Принял. $waiting Еду запишу в FatSecret $destination.")
                             val batch = mutableListOf(message)
                             val started = SystemClock.elapsedRealtime()
                             var deadline = started + MealBatch.graceMillis(batch)
@@ -120,7 +147,8 @@ class AgentService : Service() {
                             while (running && batch.size < 10 && !Thread.currentThread().isInterrupted) {
                                 if (queue.isEmpty()) {
                                     if (SystemClock.elapsedRealtime() >= deadline) break
-                                    queue.addAll(telegram.updates(offset, 2))
+                                    val seconds = ((deadline - SystemClock.elapsedRealtime() + 999) / 1000).coerceIn(1, 45).toInt()
+                                    queue.addAll(telegram.updates(offset, seconds))
                                     continue
                                 }
                                 val next = queue.first
@@ -153,6 +181,10 @@ class AgentService : Service() {
                             store.put("last_delivery", System.currentTimeMillis().toString())
                         }
                         if (reply.stop) { running = false; break }
+                    }
+                    if (running) for (receipt in commands.resumePhone(telegram)) {
+                        telegram.send(owner, receipt)
+                        store.put("last_delivery", System.currentTimeMillis().toString())
                     }
                     failures = 0
                 } catch (e: Exception) {
@@ -198,6 +230,8 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         running = false
+        unlockEvents?.close()
+        unlockEvents = null
         workerThread?.interrupt()
         client.dispatcher.cancelAll()
         worker.shutdown()

@@ -30,9 +30,11 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         }
         return local.getJSONObject("result")
     }
-    fun run(id: String, prepared: JSONObject): JSONObject {
+    fun run(id: String, prepared: JSONObject): JSONObject = start(id, prepared, false)
+    fun cancel(id: String, prepared: JSONObject): JSONObject = start(id, prepared, true)
+    private fun start(id: String, prepared: JSONObject, cancel: Boolean): JSONObject {
         status(id)?.let { return it }
-        require(store.get("write_intent").isBlank()) { "Предыдущая запись на телефоне не проверена. Проверь дневник; автоматически её не повторяю." }
+        if (!cancel) require(store.get("write_intent").isBlank()) { "Предыдущая запись на телефоне не проверена. Проверь дневник; автоматически её не повторяю." }
         require(prepared.getString("target") == "phone" && prepared.getString("status") == "prepared")
         val plan = JSONObject(prepared.getJSONObject("plan").toString()).put("_execution_id", id)
         Meals.validate(plan)
@@ -42,8 +44,10 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         }
         if (claim.optString("status") != "claimed") return uncertain(claim.optString("message", "Этот запрос уже выполнялся. Проверь дневник; повтор запрещён."))
         store.put(key(id), JSONObject().put("state", "executing").toString())
-        store.put("custom_receipts", "[]")
-        val result = try { execute(plan) } catch (error: Exception) {
+        if (!cancel) store.put("custom_receipts", "[]")
+        val result = if (cancel) JSONObject().put("status", "failed").put("receipts", JSONArray())
+            .put("message", "Запрос отменён до записи. Эта еда не добавлена.")
+        else try { execute(plan) } catch (error: Exception) {
             JSONObject().put("status", if (store.get("write_intent").isBlank()) "failed" else "uncertain")
                 .put("receipts", JSONArray(store.get("custom_receipts").ifBlank { "[]" }))
                 .put("stage", stage().take(500))

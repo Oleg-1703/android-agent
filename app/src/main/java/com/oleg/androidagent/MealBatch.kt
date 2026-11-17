@@ -14,5 +14,8 @@ object MealBatch {
             "отмена", "отмени", "отмени черновик", "останови агента", "открой fatsecret", "открой фэтсекрет")
     }
     fun graceMillis(messages: List<JSONObject>): Long =
-        if (messages.any { it.has("photo") } && messages.none { it.has("voice") }) 150_000 else 8_000
+        if (messages.any { it.has("photo") } && messages.none { it.has("voice") } &&
+            messages.none { it.optString("caption", it.optString("text")).isNotBlank() }) 150_000 else 8_000
+
+    fun waitingForVoice(messages: List<JSONObject>) = graceMillis(messages) == 150_000L
 }

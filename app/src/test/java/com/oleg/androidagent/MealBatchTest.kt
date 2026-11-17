@@ -17,4 +17,12 @@ class MealBatchTest {
             assertFalse(text, MealBatch.eligible(JSONObject().put("text", text)))
         assertTrue(MealBatch.eligible(JSONObject().put("text", "/meal@fixture\tзавтрак панини 200 г")))
     }
+    @Test fun captionedPhotoDoesNotWaitForTheLongVoiceWindow() {
+        val photo = JSONObject().put("photo", org.json.JSONArray()).put("caption", "Обед")
+        assertEquals(8000L, MealBatch.graceMillis(listOf(photo)))
+        assertFalse(MealBatch.waitingForVoice(listOf(photo)))
+        photo.remove("caption")
+        assertTrue(MealBatch.waitingForVoice(listOf(photo)))
+        assertEquals(8000L, MealBatch.graceMillis(listOf(photo, JSONObject().put("text", "Обед 200 г"))))
+    }
 }

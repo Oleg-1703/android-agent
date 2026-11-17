@@ -87,7 +87,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("screen-lease", "phone-deferred-dry-run", "phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -109,7 +109,56 @@ class DeviceSmoke : Instrumentation() {
                     }).toString())
                     result.putString("stream", "PASS: explicit owner food lookup; nothing selected or saved\n")
                 }
-                "phone-direct-dry-run" -> {
+                "screen-lease" -> {
+                    check(store.config().length() == 0 && !AgentService.workerActive)
+                    check(targetContext.packageManager.getLaunchIntentForPackage(FatAccessibilityService.FATSECRET_PACKAGE) == null)
+                    fun shell(command: String) = automation.executeShellCommand(command).use { descriptor ->
+                        android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
+                    }
+                    val previousServices = shell("settings get secure enabled_accessibility_services")
+                    val previousEnabled = shell("settings get secure accessibility_enabled")
+                    val previousStay = shell("settings get global stay_on_while_plugged_in")
+                    val previousTimeout = shell("settings get system screen_off_timeout")
+                    fun restore(namespace: String, name: String, value: String) {
+                        require(value == "null" || value.matches(Regex("[A-Za-z0-9_./:]+")))
+                        shell(if (value == "null") "settings delete $namespace $name" else "settings put $namespace $name $value")
+                    }
+                    var lease: ScreenLease? = null
+                    val power = targetContext.getSystemService(android.os.PowerManager::class.java)
+                    try {
+                        shell("input keyevent 224"); shell("wm dismiss-keyguard")
+                        shell("settings put secure enabled_accessibility_services com.oleg.androidagent/.FatAccessibilityService")
+                        shell("settings put secure accessibility_enabled 1")
+                        waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                        shell("settings put global stay_on_while_plugged_in 0")
+                        shell("settings put system screen_off_timeout 2000")
+                        shell("input keyevent 224"); shell("wm dismiss-keyguard")
+                        waitUntil("Display did not wake for test") { power.isInteractive }
+                        runOnMainSync { lease = ScreenLease(requireNotNull(FatAccessibilityService.instance), 60_000) }
+                        SystemClock.sleep(12_500)
+                        check(power.isInteractive && requireNotNull(lease).active)
+                        runOnMainSync { lease!!.close() }
+                        waitUntil("Display remained awake after lease release", 20_000) { !power.isInteractive }
+                        val unlocks = java.util.concurrent.atomic.AtomicInteger()
+                        val events = PhoneUnlockEvents(targetContext) { unlocks.incrementAndGet() }
+                        try {
+                            shell("input keyevent 224"); shell("wm dismiss-keyguard")
+                            waitUntil("Screen-on/unlock event was not delivered") { unlocks.get() > 0 }
+                        } finally { events.close() }
+                        runOnMainSync { lease = ScreenLease(requireNotNull(FatAccessibilityService.instance), 1000) }
+                        SystemClock.sleep(2000)
+                        check(!requireNotNull(lease).active)
+                        result.putString("stream", "PASS: actual display stayed on past timeout during bounded dim lease, slept after release, lease auto-expired; no inference display hold or automatic unlock\n")
+                    } finally {
+                        runOnMainSync { lease?.close() }
+                        restore("global", "stay_on_while_plugged_in", previousStay)
+                        restore("system", "screen_off_timeout", previousTimeout)
+                        restore("secure", "enabled_accessibility_services", previousServices)
+                        restore("secure", "accessibility_enabled", previousEnabled)
+                        shell("input keyevent 224"); shell("wm dismiss-keyguard")
+                    }
+                }
+                "phone-direct-dry-run", "phone-deferred-dry-run" -> {
                     check(!AgentService.workerActive && store.get("write_intent").isBlank())
                     waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
                     val screen = FatUi(targetContext, beforeCustomCommit = { throw PreviewComplete() })
@@ -166,11 +215,28 @@ class DeviceSmoke : Instrumentation() {
                     try {
                         val commands = AgentCommands(store, config, FatSecretApi(config, client), client, screen)
                         val telegram = TelegramApi(config.getString("bot_token"), client)
-                        check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
+                        if (phase == "phone-deferred-dry-run") {
+                            val brain = PcBrain(config, client, store)
+                            automation.executeShellCommand("input keyevent 223").close()
+                            waitUntil("Display did not sleep") { !targetContext.getSystemService(android.os.PowerManager::class.java).isInteractive }
+                            val deferred = commands.handle(message, telegram).text
+                            check(deferred.contains("очередь") && claims == 0 && reports == 0 && brain.hasPendingPhone())
+                            check(brain.jobStatus().contains("ждёт разблокировки") && claims == 0)
+                            check(receiptFile.readText() == originalReceipt)
+                            automation.executeShellCommand("input keyevent 224").close()
+                            automation.executeShellCommand("wm dismiss-keyguard").close()
+                            waitUntil("Phone not ready after unlock") { screen.canExecute() }
+                            check(commands.resumePhone(telegram).single().contains("QA_CANCELLED_BEFORE_SAVE"))
+                            check(!brain.hasPendingPhone())
+                        } else check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
                         check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
                         check(claims == 1 && reports == 1 && progressMessages >= 2 && store.get("write_intent").isBlank())
                         check(screen.snapshot("breakfast") == before && receiptFile.readText() == originalReceipt)
                     } finally {
+                        if (phase == "phone-deferred-dry-run") {
+                            automation.executeShellCommand("input keyevent 224").close()
+                            automation.executeShellCommand("wm dismiss-keyguard").close()
+                        }
                         client.dispatcher.cancelAll()
                         store.put("pc_last_job", oldLast)
                         if (store.get("write_intent").isBlank()) store.put("custom_receipts", oldReceipts)

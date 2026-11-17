@@ -16,6 +16,20 @@ import java.util.concurrent.TimeUnit
 
 /** A fixed recipe for the observed FatSecret 11 UI. The model never supplies actions. */
 class FatUi(private val context: Context, private val beforeCustomCommit: () -> Unit = {}) : MealScreen, CustomMealScreen {
+    private var screenLease: ScreenLease? = null
+    fun canExecute() = FatAccessibilityService.instance != null &&
+        context.getSystemService(android.os.PowerManager::class.java).isInteractive &&
+        !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+    fun <T> withExecutionScreen(block: () -> T): T {
+        requireReady()
+        check(screenLease == null)
+        val lease = main { ScreenLease(requireNotNull(FatAccessibilityService.instance)) }
+        screenLease = lease
+        try { return block() } finally {
+            main { lease.close() }
+            screenLease = null
+        }
+    }
     var searchState: String = "idle"
         private set
     var diaryRangeState: String = ""
@@ -45,6 +59,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         }
     }
     private fun root(): AccessibilityNodeInfo {
+        require(screenLease?.active != false) { "Время управления экраном истекло. Проверь результат; повторного сохранения не было." }
         require(context.getSystemService(android.os.PowerManager::class.java).isInteractive) { "Включи экран телефона и открой FatSecret." }
         require(!context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) { "Разблокируй телефон. Агент не обходит блокировку экрана." }
         val service = requireNotNull(FatAccessibilityService.instance) { "Включи специальные возможности Android Agent в настройках телефона." }

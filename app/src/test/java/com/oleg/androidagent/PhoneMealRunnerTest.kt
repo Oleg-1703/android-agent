@@ -84,4 +84,13 @@ class PhoneMealRunnerTest {
         try { runner().run(id, prepared()); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(0, claims); assertEquals(0, writes)
     }
+    @Test fun cancellingUnstartedPlanPreservesAnUncertainOlderWrite() {
+        store.put("write_intent", "previous uncertain write")
+        store.put("custom_receipts", "older verified receipts")
+        assertEquals("failed", runner().cancel(id, prepared()).getString("status"))
+        assertEquals("failed", runner().run(id, prepared()).getString("status"))
+        assertEquals("previous uncertain write", store.get("write_intent"))
+        assertEquals("older verified receipts", store.get("custom_receipts"))
+        assertEquals(0, writes); assertEquals(1, claims); assertEquals(1, reports)
+    }
 }

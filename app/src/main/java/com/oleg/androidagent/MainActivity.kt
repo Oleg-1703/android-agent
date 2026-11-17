@@ -638,7 +638,7 @@ class MainActivity : Activity() {
             setTextColor(color(R.color.navy)); minHeight = dp(48)
         }
         pc.add(pcExecuteOnPhone, 12); pc.add(pcUrl.box, 12); pc.add(pcPairing.box, 12); pc.add(pcConsent, 12)
-        pc.add(body("ИИ работает на ПК. Для записи на телефоне один раз включи управление Android Agent и оставь экран разблокированным. Подтверждать каждый приём пищи не нужно."), 12)
+        pc.add(body("ИИ работает на ПК, экран можно выключить. План дождётся разблокировки. Во время ввода агент удержит экран сам, максимум 2 минуты. Подтверждать еду не нужно."), 12)
         val pcResult = resultView()
         pc.add(button("Сохранить подключение ПК") {
             try {

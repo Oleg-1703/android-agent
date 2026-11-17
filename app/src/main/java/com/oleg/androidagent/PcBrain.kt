@@ -10,6 +10,17 @@ import java.time.LocalDate
 
 /** The pairing token authorizes this private PC, never a paid inference API. */
 class PcBrain(private val config: JSONObject, private val client: OkHttpClient, private val store: StateStore? = null) {
+    private fun plans(): PhonePlanQueue {
+        val identity = config.optString("pc_url") + ":" + config.optString("pc_pairing") + ":" + config.optString("bot_token") + ":" + config.optString("chat_id")
+        val scope = java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
+        return PhonePlanQueue(requireNotNull(store), scope)
+    }
+    fun hasPendingPhone() = config.optBoolean("pc_execute_on_phone") && plans().pending()
+    fun resumePhone(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<String> =
+        plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map(::receipt)
+    fun cancelPendingPhone(): List<String> = plans().drain({ true }) { id, prepared ->
+        phoneRunner { error("Cancel never executes") }.cancel(id, prepared)
+    }.map(::receipt)
     data class Health(val limited: Boolean, val reset: String, val phone: Boolean = false)
     fun check(): Health {
         val endpoint = endpoint(config.optString("pc_url"))
@@ -85,7 +96,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         return Request.Builder().url(endpoint(config.optString("pc_url")).newBuilder().addPathSegments(path).build())
             .header("Authorization", "Bearer $token")
     }
-    fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
+    fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, phoneReady: () -> Boolean = { true }, phoneSession: (() -> JSONObject) -> JSONObject = { it() }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
         require(messages.size in 1..10)
         val payload = JSONObject().put("date", LocalDate.now().toString())
         val descriptions = messages.map { it.optString("text", it.optString("caption")) }.filter { it.isNotBlank() }
@@ -126,7 +137,13 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
                 require(result.optString("target") == "phone") { "ПК вернул результат другого исполнителя. Автоматически на эмулятор не переключаюсь." }
             }
             return if (result.optString("status") == "prepared" && phone) {
-                receipt(phoneRunner(phoneStage, requireNotNull(executeOnPhone)).run(id, result))
+                phoneRunner(phoneStage, requireNotNull(executeOnPhone)).status(id)?.let { return receipt(it) }
+                plans().add(id, result)
+                val completed = resumePhone(phoneReady, phoneStage, phoneSession, requireNotNull(executeOnPhone))
+                val pending = if (plans().contains(id) && requireNotNull(store).get("write_intent").isNotBlank()) "Еда распознана и сохранена в очередь. Предыдущая запись не проверена: сначала сверь её в FatSecret и сними блокировку в приложении. Новую еду повторно отправлять не нужно."
+                else if (plans().contains(id)) "ИИ распознал еду. План сохранён в очередь. Можно выключить экран. Запишу автоматически после разблокировки телефона; повторно отправлять еду не нужно."
+                else ""
+                (completed + listOf(pending).filter { it.isNotBlank() }).joinToString("\n\n")
             } else receipt(result)
         }
         if (response.optString("status") !in setOf("queued", "running")) return finish(response)
@@ -142,11 +159,12 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
     fun jobStatus(): String {
         val id = store?.get("pc_last_job").orEmpty()
         if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
+        if (plans().contains(id)) return "Еда распознана и ждёт разблокировки телефона в очереди. Повторно отправлять не нужно."
         phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return "Последний запрос:\n" + receipt(it) }
         return "Последний запрос:\n" + receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)))
     }
     private fun phoneRunner(stage: () -> String = { "" }, execute: (JSONObject) -> JSONObject) = PhoneMealRunner(requireNotNull(store), object : PhoneMealRunner.Remote {
-        private fun post(id: String, action: String, body: JSONObject): JSONObject = JSONObject(Http.text(client,
+        private fun post(id: String, action: String, body: JSONObject): JSONObject = JSONObject(Http.text(client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build(),
             jobRequest("v1/jobs/$id/$action").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build(), 16000))
         override fun claim(id: String) = post(id, "claim", JSONObject())
         override fun report(id: String, result: JSONObject) {

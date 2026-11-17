@@ -114,7 +114,7 @@
     <string name="fs_intro">Обычный FatSecret, без developer-ключей и OAuth.</string>
     <string name="fs_screen_failed">Не удалось прочитать экран. Разблокируй телефон, включи специальные возможности Android Agent и проверь вход в FatSecret.</string>
     <string name="pc_consent">Claude по подписке: разбирать еду, фото и голос, записывать автоматически</string>
-    <string name="row_screen_ready">Специальные возможности включены. Войди в FatSecret и разблокируй экран.</string>
+    <string name="row_screen_ready">Управление включено. Войди в FatSecret. Распознавание работает с выключенным экраном, ввод начнётся после разблокировки.</string>
     <string name="row_screen_needed">Включи специальные возможности Android Agent. Developer-ключи не нужны.</string>
     <string name="row_pc_on">Настройки ПК сохранены. Проверь связь и оставь помощник включённым.</string>
     <string name="pc_check_failed">ПК недоступен. Проверь HTTPS-адрес, код сопряжения и работу помощника.</string>
@@ -179,7 +179,7 @@
     <string name="help_bg_body">Автозапуск после перезагрузки не гарантируется: после перезагрузки или принудительной остановки откройте приложение и нажмите «Запустить». На Realme и подобных прошивках откройте настройки приложения, разрешите работу в фоне и отключите ограничения батареи.</string>
     <string name="help_app_settings">Настройки приложения и батареи</string>
     <string name="help_tools_title">Дополнительно</string>
-    <string name="help_acc_body">Для управления приложением FatSecret включи специальные возможности Android Agent и разблокируй экран. Developer-ключи не нужны. Неизвестные экраны останавливают выполнение.</string>
+    <string name="help_acc_body">Включи специальные возможности Android Agent. Во время распознавания экран можно выключить; готовый план дождётся разблокировки. На время ввода агент удержит экран сам, максимум 2 минуты. Developer-ключи не нужны.</string>
     <string name="help_acc_open">Настройки спецвозможностей</string>
     <string name="help_open_fs">Открыть приложение FatSecret</string>
     <string name="help_no_screen">Не удалось открыть этот экран настроек на телефоне.</string>
