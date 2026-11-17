@@ -97,28 +97,42 @@ class AgentCommands(
 
     private fun handleUi(message: JSONObject, telegram: TelegramApi, text: String, command: String, natural: String): CommandReply {
         val screen = requireNotNull(ui)
+        val brain = PcBrain(config, client, store)
+        val batch = if (message.has("agent_batch")) message.objects("agent_batch") else listOf(message)
+        if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try { CommandReply(brain.submit(batch, telegram)) }
+            catch (_: java.io.IOException) { CommandReply("Не получил результат ПК. Запрос мог сохраниться на ПК. Не отправляй ту же еду повторно; проверь /status.") }
+        if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply(brain.jobStatus())
         val meals = UiMealEngine(store, screen)
         return when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
-                "Управляю установленным FatSecret. Developer-ключи не нужны. Телефон должен быть разблокирован, специальные возможности Android Agent включены.\n\n" +
-                    "/today - сводка дневника\n/meal обед банан=100 - найти продукт и подготовить порцию на сегодня\n" +
-                    "/pick 1 НОМЕР - выбрать продукт\n/confirm КОД - сохранить после проверки\n/cancel - отмена\n/status - состояние\n/stop - остановка\n\n" +
-                    "По одному продукту, только сегодня. breakfast - завтрак, lunch - обед, dinner - ужин, other - перекус. ИИ по подписке на ПК подключается отдельно; API-ключ не требуется."
+                "Записываю свою еду в твой FatSecret на эмуляторе ПК. Claude работает по твоей подписке, платного API нет.\n\n" +
+                    "1. Текст/голос с названием, весом и точными КБЖУ.\n2. Фото этикетки + голос, сколько съел.\n3. Фото блюда, с пояснением или без: КБЖУ будут оценены и помечены.\n4. Фото/цифры штрихкода + порция: проверю интернет-источник; если полного КБЖУ нет, не запишу.\n\n" +
+                    "Можно без /meal. Фото и голос объединяются в один запрос. Выбирать продукты из каталога и подтверждать каждую цифру не нужно.\n" +
+                    "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\nПК и эмулятор должны работать; открывать FatSecret на телефоне не нужно."
             )
             command == "/status" || natural == "статус" -> CommandReply(
                 "Telegram на связи. FatSecret: управление экраном. " +
                     (if (FatAccessibilityService.instance != null) "Специальные возможности включены. " else "Включи специальные возможности Android Agent. ") +
                     (if (store.get("write_intent").isNotBlank()) "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." else "Непроверенных записей нет.")
             )
-            command == "/stop" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
-            command == "/cancel" || natural == "отмена" -> {
+            command == "/stop" || natural == "останови агента" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
+            command == "/cancel" || natural in setOf("отмена", "отмени", "отмени черновик") -> {
                 store.put("pc_dialogue", "")
                 CommandReply(meals.cancel())
             }
-            command == "/today" || natural in setOf("сегодня", "дневник", "что я сегодня ел", "что я ел сегодня") -> CommandReply(screen.today())
+            command == "/open" || natural in setOf("открой fatsecret", "открой фэтсекрет") -> {
+                screen.diary()
+                CommandReply("Открыл дневник FatSecret на телефоне.")
+            }
+            command == "/today" || natural in setOf("сегодня", "дневник", "что я сегодня ел", "что я ел сегодня", "покажи дневник", "сколько калорий сегодня") -> CommandReply(screen.today())
             command == "/meal" -> {
                 store.put("pc_dialogue", "")
-                CommandReply(meals.prepare(UiMeals.parse(text)))
+                val description = text.split(Regex("\\s+"), limit = 2).getOrNull(1).orEmpty().trim()
+                if (description.isBlank()) CommandReply("Напиши одним сообщением: «На завтрак панини с моцареллой 200 граммов, на 100 граммов 209 ккал, белки 9,5, жиры 11, углеводы 18». С подключённым ПК можно без /meal, в том числе голосом. Без ПК: /meal завтрак панини с моцареллой=200")
+                else if (config.optBoolean("pc_consent")) {
+                    requireUiPlanning(screen)
+                    CommandReply(meals.prepare(brain.parse(description)))
+                } else CommandReply(meals.prepare(UiMeals.parse(text)))
             }
             command == "/pick" -> {
                 val parts = text.split(Regex("\\s+"))
@@ -142,11 +156,11 @@ class AgentCommands(
                 val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
                 require(photo != null) { "Размер фотографии - до 4 МБ." }
                 val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
-                CommandReply(meals.prepare(PcBrain(config, client, store).parse(text.ifBlank { "Определи еду на фото. Уточни вес в граммах и приём пищи, если они не указаны." }, photo = bytes)))
+                CommandReply(meals.prepare(brain.parse(text.ifBlank { "Определи еду на фото. Если вес неизвестен, оцени его и явно отметь оценку." }, photo = bytes)))
             }
             text.isNotBlank() -> {
                 requireUiPlanning(screen)
-                CommandReply(meals.prepare(PcBrain(config, client, store).parse(text)))
+                CommandReply(meals.prepare(brain.parse(text)))
             }
             else -> CommandReply("Пришли текст, фото с подписью о весе и приёме пищи или голос. API-ключ не нужен.")
         }

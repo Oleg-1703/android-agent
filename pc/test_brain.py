@@ -68,7 +68,7 @@ class BrainTests(unittest.TestCase):
         status, result = self.post({"text": "banana 100g lunch", "date": "2026-11-15"})
         self.assertEqual(status, 503)
         self.assertNotIn("private", json.dumps(result))
-        self.assertTrue(self.server.busy.acquire(blocking=False))
+        self.assertTrue(self.server.busy.acquire(timeout=1))
         self.server.busy.release()
 
     @patch.object(brain, "parse_meal")
@@ -91,7 +91,7 @@ class BrainTests(unittest.TestCase):
         status, _ = self.post({"text": "100g", "date": "2026-11-15", "conversation": key})
         self.assertEqual(status, 410)
         model.assert_not_called()
-        self.assertTrue(self.server.busy.acquire(blocking=False))
+        self.assertTrue(self.server.busy.acquire(timeout=1))
         self.server.busy.release()
 
     @patch.object(brain, "parse_meal", return_value={"question": "Какой приём пищи?", "items": []})

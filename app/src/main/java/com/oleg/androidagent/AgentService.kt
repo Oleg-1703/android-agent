@@ -93,7 +93,9 @@ class AgentService : Service() {
                         telegram.send(owner, "Android Agent запущен. Управление FatSecret через экран, без developer-ключей.\nНажми «Помощь», чтобы начать.")
                         store.put("last_delivery", System.currentTimeMillis().toString())
                     }
-                    for (update in updates) {
+                    val queue = java.util.ArrayDeque(updates)
+                    while (queue.isNotEmpty()) {
+                        val update = queue.removeFirst()
                         if (!running || Thread.currentThread().isInterrupted) break
                         val id = update.getLong("update_id")
                         if (id < offset) continue
@@ -108,6 +110,40 @@ class AgentService : Service() {
                             continue
                         }
                         store.put("last_message", System.currentTimeMillis().toString())
+                        if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) {
+                            telegram.send(owner, "Принял. Объединяю описание, фото и голос в один запрос. Результат запишу как свою еду в FatSecret на ПК.")
+                            val batch = mutableListOf(message)
+                            val started = SystemClock.elapsedRealtime()
+                            var deadline = started + MealBatch.graceMillis(batch)
+                            var cancelled = false
+                            while (running && batch.size < 10 && !Thread.currentThread().isInterrupted) {
+                                if (queue.isEmpty()) {
+                                    if (SystemClock.elapsedRealtime() >= deadline) break
+                                    queue.addAll(telegram.updates(offset, 2))
+                                    continue
+                                }
+                                val next = queue.first
+                                val nextId = next.getLong("update_id")
+                                if (nextId < offset) { queue.removeFirst(); continue }
+                                val extra = next.optJSONObject("message")
+                                if (extra != null && TelegramAccess.allowed(extra, owner) && !MealBatch.eligible(extra)) {
+                                    val control = extra.optString("text").trim().lowercase()
+                                    cancelled = control.takeWhile { !it.isWhitespace() }.substringBefore('@') in setOf("/cancel", "/stop") ||
+                                        control in setOf("отмена", "отмени", "отмени черновик", "останови агента")
+                                    break
+                                }
+                                queue.removeFirst()
+                                offset = nextId + 1
+                                store.put(offsetKey, offset.toString())
+                                if (extra == null || !TelegramAccess.allowed(extra, owner)) continue
+                                val stale = TelegramFreshness.rejection(extra, telegram.serverTimeSeconds())
+                                if (stale != null) { telegram.send(owner, stale.reply); continue }
+                                batch.add(extra)
+                                deadline = minOf(started + 180_000, SystemClock.elapsedRealtime() + MealBatch.graceMillis(batch))
+                            }
+                            if (cancelled || !running) continue
+                            message.put("agent_batch", org.json.JSONArray(batch.map { org.json.JSONObject(it.toString()) }))
+                        }
                         val reply = try { commands.handle(message, telegram) }
                         catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
                         catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }

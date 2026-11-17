@@ -15,11 +15,15 @@ import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 
 /** A fixed recipe for the observed FatSecret 11 UI. The model never supplies actions. */
-class FatUi(private val context: Context) : MealScreen {
+class FatUi(private val context: Context, private val beforeCustomCommit: () -> Unit = {}) : MealScreen, CustomMealScreen {
     var searchState: String = "idle"
         private set
     data class Row(val name: String, val detail: String)
     private val prefix = "com.fatsecret.android:id/"
+    private var customCommitStarted = false
+    private var existingIdentity: String? = null
+    override fun diaryName(): String? = if (existingIdentity == null) null else main { text("food_name_tv").single() }
+    override fun commitStarted() = customCommitStarted
     override fun screenStamp(): String = main { root(); requireNotNull(FatAccessibilityService.instance).screenStamp }
     private fun contextOnMain(): String = text("actionbar_title").single() + "\n" + text("actionbar_subtitle").single()
     override fun searchContext(): String = main { contextOnMain() }
@@ -46,8 +50,9 @@ class FatUi(private val context: Context) : MealScreen {
         require(root.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE) { "Открой FatSecret. Другими приложениями агент не управляет." }
         return root
     }
-    private fun nodes(id: String): List<AccessibilityNodeInfo> = root().findAccessibilityNodeInfosByViewId(prefix + id)
-        .filter { it.isVisibleToUser && it.isEnabled && !it.isPassword }
+    private fun visibleNodes(id: String): List<AccessibilityNodeInfo> = root().findAccessibilityNodeInfosByViewId(prefix + id)
+        .filter { it.isVisibleToUser && !it.isPassword }
+    private fun nodes(id: String): List<AccessibilityNodeInfo> = visibleNodes(id).filter { it.isEnabled }
     private fun text(id: String): List<String> = nodes(id).map { it.text?.toString().orEmpty().trim().take(240) }
     private fun click(node: AccessibilityNodeInfo) {
         var target = node
@@ -73,8 +78,8 @@ class FatUi(private val context: Context) : MealScreen {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
         })) { "FatSecret не принял текст." }
     }
-    private fun waitFor(test: () -> Boolean) {
-        val end = SystemClock.elapsedRealtime() + 10_000
+    private fun waitFor(timeoutMillis: Long = 10_000, test: () -> Boolean) {
+        val end = SystemClock.elapsedRealtime() + timeoutMillis
         while (SystemClock.elapsedRealtime() < end) {
             check(!Thread.currentThread().isInterrupted) { "Screen operation cancelled" }
             if (try { main(test) } catch (_: IllegalArgumentException) { false }) return
@@ -109,9 +114,11 @@ class FatUi(private val context: Context) : MealScreen {
         }
         throw IllegalArgumentException("Не найден дневник FatSecret. Войди в свой аккаунт в самом приложении.")
     }
-    private fun requireToday() = main {
-        require(text("date_in_navigation_bar").singleOrNull()?.lowercase() in setOf("today", "сегодня")) {
-            "Выбери «Сегодня» в дневнике FatSecret. Агент не будет угадывать дату."
+    private fun requireToday() {
+        val current = main { text("date_in_navigation_bar").singleOrNull()?.lowercase() in setOf("today", "сегодня") }
+        if (!current) {
+            clickId("today_link")
+            waitFor { text("date_in_navigation_bar").singleOrNull()?.lowercase() in setOf("today", "сегодня") }
         }
     }
     private fun scrollDiary(forward: Boolean): Boolean {
@@ -266,8 +273,8 @@ class FatUi(private val context: Context) : MealScreen {
         return "Сводка с экрана FatSecret за сегодня:\n" + meals.entries.joinToString("\n") { "${it.key}: ${it.value}" } +
             "\nЭто сводка разделов, полный состав - в FatSecret."
     }
-    override fun search(meal: String, query: String): List<Row> {
-        require(meal in Meals.types && query.length in 2..150)
+    private fun openMeal(meal: String) {
+        require(meal in Meals.types)
         diary(); requireToday(); top()
         val labels = when(meal) {
                 "breakfast" -> setOf("breakfast", "завтрак")
@@ -285,12 +292,39 @@ class FatUi(private val context: Context) : MealScreen {
             if (opened || !scrollDiary(true)) break
         }
         require(opened) { "Нужный приём пищи не найден в дневнике FatSecret." }
+        waitFor { nodes("food_journal_add_indicator").size == 1 }
+        if (main { nodes("edit_text").isEmpty() }) {
+            for (step in 0 until 5) {
+                val moved = main { nodes("food_journal_add_indicator").single().performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) }
+                if (!moved) break
+                SystemClock.sleep(150)
+            }
+            main {
+                val tabs = nodes("food_journal_add_indicator").single()
+                val matches = mutableListOf<AccessibilityNodeInfo>()
+                var visited = 0
+                fun walk(node: AccessibilityNodeInfo, depth: Int) {
+                    require(depth <= 10 && visited++ < 100)
+                    if (node.isVisibleToUser && node.isEnabled && node.text?.toString()?.trim()?.lowercase() in setOf("food", "еда", "продукты")) matches += node
+                    for (index in 0 until node.childCount) node.getChild(index)?.let { walk(it, depth + 1) }
+                }
+                walk(tabs, 0)
+                require(matches.size == 1) { "Вкладка поиска продуктов недоступна. Ничего не записано." }
+                click(matches.single())
+            }
+        }
         waitFor { nodes("edit_text").size == 1 }
         main {
             require(FatUiDate.matches(text("actionbar_subtitle").singleOrNull().orEmpty(), java.time.LocalDate.now())) {
                 "Дата на экране FatSecret не совпадает с сегодняшней или её формат неизвестен. Проверь дату в приложении."
             }
         }
+    }
+    override fun search(meal: String, query: String): List<Row> = searchResults(meal, query, false)
+    fun existingCandidates(meal: String, query: String): List<Row> = searchResults(meal, query, true)
+    private fun searchResults(meal: String, query: String, exactQuery: Boolean): List<Row> {
+        require(query.length in 2..150)
+        openMeal(meal)
         clickId("edit_text")
         setText("edit_text", "")
         SystemClock.sleep(150)
@@ -301,6 +335,7 @@ class FatUi(private val context: Context) : MealScreen {
             if (suggestions.isEmpty()) false else {
                 val exact = suggestions.filter { it.text?.toString()?.trim()?.equals(query.trim(), true) == true }
                 require(exact.size <= 1) { "Неоднозначная подсказка поиска FatSecret." }
+                if (exactQuery && exact.isEmpty()) return@main false
                 // FatSecret may translate a query. This opens candidates, never picks a food.
                 click(exact.singleOrNull() ?: suggestions.first())
                 true
@@ -371,6 +406,200 @@ class FatUi(private val context: Context) : MealScreen {
         require(found.isNotEmpty()) { "Не удалось прочитать результаты поиска FatSecret." }
         found
     }
+    private fun customRow(labels: Set<String>) = main {
+        val row = nodes("custom_entry_product_info_row_title").filter { it.text?.toString()?.trim()?.lowercase() in labels }
+        require(row.size == 1) { "Поле своей еды не найдено. Запись остановлена." }
+        click(row.single())
+    }
+    private fun customScroll(forward: Boolean): Boolean = main {
+        require(visibleNodes("save_food_preview_btn").size == 1) { "Экран ввода КБЖУ изменился." }
+        val body = nodes("scroll_body").single()
+        body.performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+    }.also { SystemClock.sleep(150) }
+    private fun customNumber(holder: String, value: String) {
+        require(holder in setOf("energy_input", "fat_input", "total_carbs_input", "protein_input"))
+        for (attempt in 0 until 30) {
+            val found = main {
+                searchState = "custom_field_${holder}_$attempt"
+                val container = root().findAccessibilityNodeInfosByViewId(prefix + holder).singleOrNull()
+                    ?: run { searchState += "_container_missing"; return@main 0 }
+                if (!container.isVisibleToUser && container.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) return@main 2
+                val edit = mutableListOf<AccessibilityNodeInfo>()
+                fun editors(node: AccessibilityNodeInfo, depth: Int) {
+                    if (depth > 5) return
+                    if (node.viewIdResourceName == prefix + "edit_text" && node.isEnabled && node.className?.toString() == "android.widget.EditText") edit += node
+                    for (index in 0 until minOf(node.childCount, 12)) node.getChild(index)?.let { editors(it, depth + 1) }
+                }
+                editors(container, 0)
+                if (edit.size != 1) {
+                    searchState += "_editor_count_${edit.size}"
+                    return@main if (container.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) 2 else 0
+                }
+                val area = Rect().also { nodes("scroll_body").single().getBoundsInScreen(it) }
+                val field = Rect().also { edit.single().getBoundsInScreen(it) }
+                if (!edit.single().isVisibleToUser || !area.contains(field)) {
+                    if (edit.single().performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) return@main 2
+                    return@main if (field.top < area.top) -1 else 0
+                }
+                if (holder == "energy_input") {
+                    val hint = edit.single().hintText?.toString()?.lowercase().orEmpty()
+                    val conversion = text("footer_unit_measurement_conversion_text").joinToString(" ").lowercase()
+                    require(hint in setOf("calories", "калории", "ккал") || conversion.startsWith("1 cal =") || conversion.startsWith("1 кал =")) { "Ожидались калории, а не кДж. Запись остановлена." }
+                }
+                edit.single().performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                require(edit.single().performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
+                }))
+                edit.single().refresh()
+                require(edit.single().text?.toString()?.replace(',', '.')?.toBigDecimalOrNull()?.compareTo(value.toBigDecimal()) == 0)
+                1
+            }
+            if (found == 1) return
+            if (found == 2) { SystemClock.sleep(150); continue }
+            require(customScroll(found != -1)) { "Не найдено обязательное поле КБЖУ." }
+        }
+        throw IllegalArgumentException("Не удалось заполнить КБЖУ своей еды.")
+    }
+    private fun nutritionSaveNodes(): List<AccessibilityNodeInfo> {
+        val found = mutableListOf<AccessibilityNodeInfo>()
+        var visited = 0
+        fun walk(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 20 || visited++ > 600) return
+            if (node.isVisibleToUser && node.isEnabled && node.text?.toString() in setOf("Save", "Сохранить")) found += node
+            for (index in 0 until node.childCount) node.getChild(index)?.let { walk(it, depth + 1) }
+        }
+        walk(root(), 0)
+        return found
+    }
+    private fun saveNutritionPreview() = main {
+        require(text("actionbar_subtitle").singleOrNull()?.lowercase() in setOf("preview", "предпросмотр", "предварительный просмотр"))
+        val exact = nutritionSaveNodes()
+        require(exact.size == 1) { "Кнопка подтверждения КБЖУ изменилась." }
+        click(exact.single())
+    }
+    /** Custom-food creation is itself journaled before entering this method. */
+    override fun createCustom(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
+        customCommitStarted = false
+        MealNutrition.validate(item)
+        val n = item.getJSONObject("nutrition")
+        val basis = n.getString("basis_grams").toBigDecimal()
+        fun per100(key: String) = (n.getString(key).toBigDecimal() * java.math.BigDecimal("100"))
+            .divide(basis, 6, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+        val query = "agent" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+        searchState = "custom_open"
+        openMeal(meal)
+        onContext(main { contextOnMain() })
+        clickId("edit_text"); setText("edit_text", query)
+        keyboardSearch(query)
+        waitFor { nodes("search_results_addcustom").size == 1 }
+        clickId("search_results_addcustom")
+        waitFor { nodes("custom_entry_advanced_ok").size == 1 }
+        customRow(setOf("brand", "бренд", "торговая марка", "марка"))
+        waitFor { nodes("titled_list_item_title").isNotEmpty() }
+        main {
+            val row = nodes("titled_list_item_title").filter { it.text?.toString()?.lowercase() in setOf("my custom food entry", "моя собственная еда", "мой продукт", "мой собственный продукт") }
+            require(row.size == 1) { "Не найден режим своей еды." }; click(row.single())
+        }
+        waitFor { nodes("custom_entry_adv_brand_input_field").size == 1 }
+        setText("custom_entry_adv_brand_input_field", "Моя еда")
+        waitFor { nodes("action_save").size == 1 }; clickId("action_save")
+        waitFor { nodes("custom_entry_advanced_ok").size == 1 }
+        customRow(setOf("product name", "название продукта", "наименование продукта"))
+        waitFor { nodes("custom_entry_adv_product_name_input").size == 1 }
+        setText("custom_entry_adv_product_name_input", item.getString("query"))
+        waitFor { nodes("action_save").size == 1 }; clickId("action_save")
+        waitFor { nodes("custom_entry_advanced_ok").size == 1 }
+        customRow(setOf("nutrition information", "пищевая ценность", "информация о пищевой ценности", "питательная ценность"))
+        main {
+            val entries = root().findAccessibilityNodeInfosByViewId("android:id/text1").filter {
+                it.isVisibleToUser && it.text?.toString()?.replace(" ", "") in setOf("100g", "100г")
+            }
+            require(entries.size == 1) { "Не найдена основа 100 г." }; click(entries.single())
+        }
+        waitFor { visibleNodes("save_food_preview_btn").size == 1 }
+        require(main { text("metric_serving_size_label").singleOrNull() == "100" && text("metric_serving_size_text").singleOrNull()?.lowercase() in setOf("grams", "граммы", "грамм", "г") })
+        searchState = "custom_nutrition"
+        customNumber("energy_input", per100("calories"))
+        customNumber("fat_input", per100("fat"))
+        customNumber("total_carbs_input", per100("carbs"))
+        customNumber("protein_input", per100("protein"))
+        searchState = "custom_nutrition_done"
+        clickId("save_food_preview_btn")
+        waitFor { text("actionbar_subtitle").singleOrNull()?.lowercase() in setOf("preview", "предпросмотр", "предварительный просмотр") }
+        searchState = "custom_nutrition_preview_save"
+        waitFor { nutritionSaveNodes().size == 1 }
+        saveNutritionPreview()
+        searchState = "custom_nutrition_review"
+        waitFor { nodes("custom_entry_advanced_ok").size == 1 }
+        main {
+            val summary = text("custom_entry_product_info_row_value").filter { it.contains("Calories:") || it.contains("Калории:") }
+            require(summary.size == 1) { "Не удалось прочитать итоговые КБЖУ своей еды." }
+            val values = Regex("[0-9]+(?:[.,][0-9]+)?").findAll(summary.single()).map { it.value.replace(',', '.').toBigDecimal() }.toList()
+            val expected = listOf("100", per100("calories"), per100("fat"), per100("carbs"), per100("protein")).map { it.toBigDecimal() }
+            require(values.size == expected.size && values.indices.all { values[it].compareTo(expected[it]) == 0 }) { "FatSecret изменил введённые КБЖУ. Сохранение остановлено." }
+        }
+        return finishPreparedCustom(item)
+    }
+    override fun finishPreparedCustom(item: org.json.JSONObject): String {
+        require(main { nodes("custom_entry_advanced_ok").size == 1 && text("custom_entry_product_info_row_value").contains(item.getString("query")) && text("custom_entry_product_info_row_value").contains("Моя еда") })
+        searchState = "custom_tag"
+        customRow(setOf("add/edit tags", "добавить/изменить теги", "добавить/изменить метки", "теги", "метки"))
+        waitFor { nodes("custom_entry_adv_tag_input_field").isNotEmpty() || nodes("checkbox_list_item_row_title").isNotEmpty() }
+        if (main { nodes("custom_entry_adv_tag_input_field").isNotEmpty() }) {
+            setText("custom_entry_adv_tag_input_field", "Meal")
+            waitFor { nodes("custom_entry_adv_tag_save").size == 1 }
+            clickId("custom_entry_adv_tag_save")
+            waitFor { nodes("checkbox_list_item_row_title").isNotEmpty() }
+        }
+        main {
+            val title = nodes("checkbox_list_item_row_title").filter { it.text?.toString() == "Meal" }
+            require(title.size == 1) { "Тег своей еды не найден." }
+            val checks = mutableListOf<AccessibilityNodeInfo>()
+            fun walk(node: AccessibilityNodeInfo, depth: Int) {
+                if (depth > 5) return
+                if (node.viewIdResourceName == prefix + "checkbox_list_item_row_checkbox") checks += node
+                for (i in 0 until node.childCount) node.getChild(i)?.let { walk(it, depth + 1) }
+            }
+            walk(requireNotNull(title.single().parent), 0)
+            require(checks.size == 1)
+            if (!checks.single().isChecked) click(checks.single())
+        }
+        waitFor { nodes("checkbox_list_item_row_checkbox").any { it.isChecked } }
+        clickId("action_save")
+        waitFor { nodes("custom_entry_advanced_ok").size == 1 }
+        main {
+            val n = item.getJSONObject("nutrition")
+            fun value(key: String) = (n.getString(key).toBigDecimal() * java.math.BigDecimal("100")).divide(n.getString("basis_grams").toBigDecimal(), 6, java.math.RoundingMode.HALF_UP)
+            val summary = text("custom_entry_product_info_row_value").single { it.contains("Calories:") || it.contains("Калории:") }
+            val actual = Regex("[0-9]+(?:[.,][0-9]+)?").findAll(summary).map { it.value.replace(',', '.').toBigDecimal() }.toList()
+            val expected = listOf(java.math.BigDecimal("100"), value("calories"), value("fat"), value("carbs"), value("protein"))
+            require(actual.size == expected.size && actual.indices.all { actual[it].compareTo(expected[it]) == 0 }) { "КБЖУ своей еды изменились. Запись остановлена." }
+        }
+        searchState = "custom_form_ready"
+        beforeCustomCommit()
+        searchState = "custom_product_save"
+        customCommitStarted = true
+        clickId("custom_entry_advanced_ok")
+        waitFor(30_000) { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
+        searchState = "custom_portion"
+        return finishCustomPortion(item)
+    }
+    override fun finishCustomPortion(item: org.json.JSONObject) = setPortion(item.getString("grams"), item.getString("query"))
+    override fun cancelCustomDraft() {
+        require(!customCommitStarted) { "Создание продукта уже начиналось. Автоматическая отмена запрещена." }
+        repeat(6) {
+            val cancelled = main {
+                if (nodes("custom_entry_advanced_cancel").size == 1) { click(nodes("custom_entry_advanced_cancel").single()); return@main true }
+                require(visibleNodes("save_food_preview_btn").isNotEmpty() || nodes("title_of_food_edit").isNotEmpty() ||
+                    text("actionbar_subtitle").singleOrNull()?.lowercase() in setOf("preview", "предпросмотр", "предварительный просмотр", "add new food", "добавить новый продукт"))
+                requireNotNull(FatAccessibilityService.instance).performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                false
+            }
+            if (cancelled) return
+            SystemClock.sleep(250)
+        }
+        throw IllegalArgumentException("Не удалось закрыть несохранённую форму своей еды.")
+    }
     override fun choose(index: Int, expected: List<Row>, grams: String): String {
         require(rows() == expected) { "Результаты поиска изменились. Отправь еду заново." }
         main {
@@ -379,14 +608,109 @@ class FatUi(private val context: Context) : MealScreen {
             click(candidates[index].first)
         }
         waitFor { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
-        clickId("portion_name")
-        waitFor { nodes("fem_dialog_spinner_item_text").size > 1 }
+        return setPortion(grams)
+    }
+    override fun prepareExisting(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
+        val query = item.getString("query")
+        existingCandidates(meal, query)
+        onContext(searchContext())
+        fun list() = root().findAccessibilityNodeInfosByViewId("android:id/list")
+            .filter { it.isVisibleToUser && it.isEnabled }.single()
+        fun scroll(forward: Boolean): Boolean {
+            val sequence = FatAccessibilityService.instance?.resultScroll?.sequence ?: 0
+            val moved = main { list()
+                .performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) }
+            if (moved) {
+                SystemClock.sleep(450)
+                require((FatAccessibilityService.instance?.resultScroll?.sequence ?: 0) > sequence) { "Поиск не подтвердил границы выдачи. Ничего не записано." }
+            }
+            return moved
+        }
+        fun top() { repeat(60) { if (!scroll(false)) return }; error("Search is too long") }
+        fun frame(): Pair<Int, List<Row?>> = main {
+            val list = list()
+            val range = requireNotNull(FatAccessibilityService.instance?.resultScroll)
+            require(range.rootHash == list.hashCode() && range.window == list.windowId && range.from >= 0 &&
+                range.count in 1..300 && range.to < range.count && list.childCount == range.to - range.from + 1) {
+                "Не удалось полностью прочитать выдачу. Укажи точное название с размером и брендом. Ничего не записано."
+            }
+            val values = (0 until list.childCount).map { index ->
+                val row = requireNotNull(list.getChild(index))
+                fun field(id: String) = row.findAccessibilityNodeInfosByViewId(prefix + id).singleOrNull()?.text?.toString()?.trim()
+                if (row.viewIdResourceName == prefix + "multi_add_item_row") {
+                    val name = field("title_description")
+                    val detail = field("sub_title_portion_description")
+                    if (name.isNullOrBlank() || detail.isNullOrBlank()) null else Row(name, detail)
+                } else {
+                    if (listOf("search_results_next", "search_results_previous", "search_results_addcustom").any { field(it) != null }) Row("", "") else null
+                }
+            }
+            range.from to values
+        }
+        fun readPage(): Map<Int, Row> {
+            if (scroll(true)) scroll(false) else if (scroll(false)) scroll(true)
+            top()
+            val all = sortedMapOf<Int, Row>()
+            var total = -1
+            for (viewport in 0 until 60) {
+                val (from, visible) = frame()
+                val count = requireNotNull(FatAccessibilityService.instance?.resultScroll).count
+                require(total == -1 || total == count)
+                total = count
+                visible.forEachIndexed { index, row ->
+                    if (row != null) {
+                        require(all[from + index] == null || all[from + index] == row) { "Выдача изменилась. Ничего не записано." }
+                        all[from + index] = row
+                    }
+                }
+                if (all.size == total || !scroll(true)) break
+            }
+            require(all.size == total && all.keys.first() == 0 && all.keys.last() == total - 1) { "Выдача прочитана не полностью. Ничего не записано." }
+            return all
+        }
+        // FatSecret can return thousands of unrelated global products for one size word.
+        // Use its first ranked page, requiring every requested word and an unambiguous match.
+        val candidates = readPage().filterValues { it.name.isNotBlank() }.entries.toList()
+        val selected = candidates[ExistingFood.exactIndex(query, candidates.map { it.value })]
+        val index = selected.key
+        val expected = selected.value
+        top()
+        for (viewport in 0 until 60) {
+            val (from, visible) = frame()
+            if (index in from until from + visible.size) {
+                if (visible[index - from] == null) {
+                    main { requireNotNull(list().getChild(index - from)).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id) }
+                    SystemClock.sleep(250)
+                    continue
+                }
+                require(visible[index - from] == expected)
+                main {
+                    val row = requireNotNull(list().getChild(index - from))
+                    require(row.findAccessibilityNodeInfosByViewId(prefix + "title_description").single().text.toString().trim() == expected.name)
+                    require(row.findAccessibilityNodeInfosByViewId(prefix + "sub_title_portion_description").single().text.toString().trim() == expected.detail)
+                    row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
+                    click(row)
+                }
+                waitFor { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
+                existingIdentity = expected.name
+                return setPortion(item.getString("grams"))
+            }
+            if (!scroll(true)) break
+        }
+        throw IllegalArgumentException("Точный продукт больше не виден. Ничего не записано.")
+    }
+    override fun cancelExistingDraft() { diary(allowDraft = true) }
+    private fun setPortion(grams: String, expectedName: String? = null): String {
+        val alreadyOpen = main { nodes("fem_dialog_spinner_item_text").isNotEmpty() && nodes("fem_save_btn").isEmpty() }
+        if (!alreadyOpen) clickId("portion_name")
+        waitFor { nodes("fem_dialog_spinner_item_text").isNotEmpty() }
         main {
             val gramsOption = nodes("fem_dialog_spinner_item_text").filter { it.text?.toString()?.trim() in setOf("g", "г") }
             require(gramsOption.size == 1) { "У этого продукта нет порции в граммах. Выбери другой продукт." }
             click(gramsOption.single())
         }
         waitFor { nodes("fem_save_btn").size == 1 && nodes("portions_count_et").singleOrNull()?.isEditable == true }
+        if (expectedName != null) require(main { text("food_name_tv").singleOrNull()?.equals(expectedName, ignoreCase = true) == true }) { "Открыт другой продукт. Сохранение остановлено." }
         setText("portions_count_et", grams)
         SystemClock.sleep(350)
         return preview()
@@ -399,7 +723,11 @@ class FatUi(private val context: Context) : MealScreen {
         require(unit in setOf("g", "г")) { "Единицы порции изменились. Подготовь запись заново." }
         val grams = text("portions_count_et").singleOrNull().orEmpty()
         require(grams.replace(',', '.').toBigDecimalOrNull()?.signum() == 1)
-        return "${text("food_name_tv").single()}: $grams $unit\n" +
+        val name = text("food_name_tv").single()
+        val brand = text("brand_name_tv").singleOrNull().orEmpty()
+        val identity = existingIdentity
+        if (identity != null) require(identity == name || (brand.isNotBlank() && identity == "$name ($brand)")) { "Название или бренд карточки изменились. Ничего не записано." }
+        return "${identity ?: name}: $grams $unit\n" +
             "${text("calories_tv").singleOrNull().orEmpty()} ккал; Б ${text("protein_tv").singleOrNull().orEmpty()}, Ж ${text("fat_tv").singleOrNull().orEmpty()}, У ${text("carbohydrates_tv").singleOrNull().orEmpty()}"
     }
     /** Caller must commit the write journal before this single, never-retried click. */
@@ -412,8 +740,10 @@ class FatUi(private val context: Context) : MealScreen {
             require(save.size == 1)
             click(save.single())
         }
-        // The portion SAVE stages the item; only the toolbar button commits it.
-        waitFor { nodes("multi_add_save_section_holder").size == 1 && text("multi_add_save").singleOrNull() == "1" }
+        // Custom foods commit directly; catalog results can require a second toolbar save.
+        waitFor { (nodes("multi_add_save_section_holder").size == 1 && text("multi_add_save").singleOrNull() == "1") ||
+            (nodes("date_in_navigation_bar").size == 1 && nodes("multi_add_save_section_holder").isEmpty()) }
+        if (main { nodes("date_in_navigation_bar").size == 1 && nodes("multi_add_save_section_holder").isEmpty() }) return
         main {
             require(contextOnMain() == expectedContext) { "Дата или приём пищи изменились. Запись остановлена." }
             val checked = nodes("multi_add_item_checked").filter { it.isChecked }

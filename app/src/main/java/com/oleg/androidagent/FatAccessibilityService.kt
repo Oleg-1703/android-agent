@@ -12,6 +12,8 @@ class FatAccessibilityService : AccessibilityService() {
         val deltaY: Int, val sequence: Long, val rootHash: Int, val window: Int)
     @Volatile var lastScroll: ScrollState? = null
         private set
+    @Volatile var resultScroll: ScrollState? = null
+        private set
     companion object {
         const val FATSECRET_PACKAGE = "com.fatsecret.android"
         @Volatile var instance: FatAccessibilityService? = null
@@ -47,6 +49,10 @@ class FatAccessibilityService : AccessibilityService() {
             if (source?.viewIdResourceName == "$FATSECRET_PACKAGE:id/food_journal_new_body") {
                 lastScroll = ScrollState(source.viewIdResourceName, event.fromIndex, event.toIndex, event.itemCount,
                     event.scrollY, event.maxScrollY, event.scrollDeltaY, (lastScroll?.sequence ?: 0) + 1, source.hashCode(), event.windowId)
+            }
+            if (source?.viewIdResourceName == "android:id/list") {
+                resultScroll = ScrollState(source.viewIdResourceName, event.fromIndex, event.toIndex, event.itemCount,
+                    event.scrollY, event.maxScrollY, event.scrollDeltaY, (resultScroll?.sequence ?: 0) + 1, source.hashCode(), event.windowId)
             }
         }
     }

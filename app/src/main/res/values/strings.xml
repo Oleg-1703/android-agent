@@ -73,7 +73,7 @@
     <string name="how_1">1. Создайте бота у BotFather в Telegram и вставьте его токен на вкладке Telegram вместе со своим числовым ID.</string>
     <string name="how_2">2. Нажмите «Проверить соединение», затем «Запустить» вверху этого экрана.</string>
     <string name="how_3">3. Напишите боту /help из личного чата с аккаунта, чей ID указан. Бот отвечает и без FatSecret.</string>
-    <string name="how_4">4. Запись в дневник: подключите FatSecret, при желании - ИИ. Каждая запись проходит проверку в чате.</string>
+    <string name="how_4">4. Подключи ПК на вкладке ИИ. Напиши КБЖУ или пришли фото и голос. Агент запишет свою еду в FatSecret на эмуляторе ПК и вернёт результат.</string>
     <string name="diag_open">Диагностика для скриншота</string>
 
     <!-- telegram -->
@@ -113,7 +113,7 @@
     <string name="fs_get_keys_help">Ключи выдаёт FatSecret после регистрации приложения. У Basic есть бесплатный доступ с ограничениями; поиск продуктов - по базе США. Вход в свой дневник выполняется отдельно ниже.</string>
     <string name="fs_intro">Обычный FatSecret, без developer-ключей и OAuth.</string>
     <string name="fs_screen_failed">Не удалось прочитать экран. Разблокируй телефон, включи специальные возможности Android Agent и проверь вход в FatSecret.</string>
-    <string name="pc_consent">Разрешаю отправлять текст и фото еды на мой ПК и в Claude, а голос распознавать на ПК и отправлять в Claude полученный текст</string>
+    <string name="pc_consent">Разрешаю передавать описание еды, фото и голос моему ПК, обрабатывать их Claude по подписке и автоматически записывать свою еду в мой FatSecret на эмуляторе с проверкой дневника</string>
     <string name="row_screen_ready">Специальные возможности включены. Войди в FatSecret и разблокируй экран.</string>
     <string name="row_screen_needed">Включи специальные возможности Android Agent. Developer-ключи не нужны.</string>
     <string name="row_pc_on">Настройки ПК сохранены. Проверь связь и оставь помощник включённым.</string>
@@ -155,7 +155,7 @@
 
     <!-- ai -->
     <string name="ai_title">ИИ (по желанию)</string>
-    <string name="ai_intro">Твоя подписка на ПК. Без API-ключа. Без ИИ работает /meal.</string>
+    <string name="ai_intro">Подключи ПК адресом и кодом. Текст, фото этикетки или блюда и голос разберёт Claude по подписке. Своя еда будет записана в FatSecret на эмуляторе ПК. Держать FatSecret открытым на телефоне не нужно.</string>
     <string name="ai_consent">Разрешаю отправлять текст, фото и голос из моего чата выбранному ИИ-провайдеру (может быть платно)</string>
     <string name="ai_url">Адрес API (OpenAI-совместимый, только HTTPS)</string>
     <string name="ai_key">Ключ API</string>

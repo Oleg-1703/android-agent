@@ -76,6 +76,70 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         }
         return Meals.validate(response)
     }
+    private fun jobRequest(path: String): Request.Builder {
+        require(config.optBoolean("pc_consent")) { "Подключи помощник ПК на вкладке ИИ. Запись выполняется в твоём FatSecret на эмуляторе." }
+        val token = config.optString("pc_pairing")
+        require(token.matches(Regex("[A-Za-z0-9_-]{32,200}"))) { "Сохрани код сопряжения ПК на вкладке ИИ." }
+        return Request.Builder().url(endpoint(config.optString("pc_url")).newBuilder().addPathSegments(path).build())
+            .header("Authorization", "Bearer $token")
+    }
+    fun submit(messages: List<JSONObject>, telegram: TelegramApi): String {
+        require(messages.size in 1..10)
+        val payload = JSONObject().put("date", LocalDate.now().toString())
+        val descriptions = messages.map { it.optString("text", it.optString("caption")) }.filter { it.isNotBlank() }
+        val description = descriptions.joinToString("\n").ifBlank { "Разбери присланные фото еды, этикеток или штрихкодов. Запиши свою еду в дневник." }
+        require(description.length <= 4000) { "Описание еды слишком длинное." }
+        payload.put("text", description)
+        val photos = org.json.JSONArray()
+        var voices = 0
+        for (message in messages) {
+            if (message.has("photo")) {
+                val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
+                require(photo != null && photos.length() < 4) { "Пришли до четырёх фото по 4 МБ." }
+                val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
+                photos.put(JSONObject().put("media_type", "image/jpeg").put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)))
+            }
+            if (message.has("voice")) {
+                val voice = message.getJSONObject("voice")
+                require(++voices == 1 && voice.optInt("duration") in 1..120) { "Один голосовой комментарий до 120 секунд на запрос." }
+                val bytes = telegram.download(voice.getString("file_id"), voice.optLong("file_size"), 4_000_000)
+                payload.put("voice", JSONObject().put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)))
+            }
+        }
+        payload.put("images", photos)
+        val identity = config.optString("bot_token") + ":" + config.optString("chat_id") + ":" + messages.joinToString(",") { it.getLong("message_id").toString() }
+        val id = java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
+        payload.put("request_id", id)
+        val request = jobRequest("v1/log").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        store?.put("pc_last_job", id)
+        val response = JSONObject(Http.text(client, request, 16000))
+        if (response.optString("status") !in setOf("queued", "running")) return receipt(response)
+        for (attempt in 0 until 200) {
+            Thread.sleep(3000)
+            val status = JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))
+            if (status.optString("status") !in setOf("queued", "running")) return receipt(status)
+        }
+        return "ПК ещё обрабатывает запрос. Не отправляй еду повторно. Результат: /status."
+    }
+    fun jobStatus(): String {
+        val id = store?.get("pc_last_job").orEmpty()
+        if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
+        return receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)))
+    }
+    private fun receipt(result: JSONObject): String {
+        val savedBeforeFailure = result.objects("receipts").takeIf { it.isNotEmpty() }?.let { rows ->
+            "До остановки уже сохранено и проверено:\n" + rows.joinToString("\n") { it.optString("preview") } + "\n\n"
+        }.orEmpty()
+        return when (result.optString("status")) {
+            "queued", "running" -> "Запрос обрабатывается на ПК. Повторять еду не нужно."
+            "complete" -> "Еда сохранена и проверена в твоём FatSecret:\n" +
+                result.objects("receipts").joinToString("\n\n") { it.optString("preview") + if (it.optString("source") == "estimate") "\nКБЖУ и/или вес оценены по фото/описанию." else "" } +
+                result.optString("notes").takeIf { it.isNotBlank() }?.let { "\n\n$it" }.orEmpty() +
+                result.optJSONArray("sources")?.let { values -> (0 until values.length()).joinToString("\n", "\n") { values.getString(it) } }.orEmpty()
+            "failed" -> savedBeforeFailure + result.optString("message", "Запрос не выполнен. Ничего нового не записано.")
+            else -> savedBeforeFailure + result.optString("message", "Результат неизвестен. Проверь дневник; повторять запись автоматически нельзя.")
+        }
+    }
     companion object {
         fun endpoint(value: String): okhttp3.HttpUrl {
             val url = try { value.trim().toHttpUrl() } catch (_: IllegalArgumentException) {

@@ -17,13 +17,16 @@ import java.io.File
 
 /** Test APK only. Refuses physical devices and never exports configured secrets. */
 class DeviceSmoke : Instrumentation() {
+    private class PreviewComplete : RuntimeException()
     private var phase = "write"
     private var reviewedTest = false
+    private var inspectedContext = ""
     private var inspectedUi: FatUi? = null
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         phase = arguments?.getString("phase") ?: "write"
         reviewedTest = arguments?.getString("reviewed_test") == "banana-1g-lunch"
+        inspectedContext = arguments?.getString("inspected_context").orEmpty()
         start()
     }
     private fun waitUntil(label: String, timeout: Long = 30_000, test: () -> Boolean) {
@@ -84,7 +87,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -92,6 +95,133 @@ class DeviceSmoke : Instrumentation() {
             val store = SecretStore(targetContext)
             val marker = "device-smoke-not-a-secret"
             when (phase) {
+                "owner-search" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val input = File(targetContext.filesDir, "owner-search.json")
+                    val request = JSONObject(input.readText())
+                    input.delete()
+                    val screen = FatUi(targetContext)
+                    val rows = if (request.optBoolean("existing")) screen.existingCandidates(request.getString("meal"), request.getString("query"))
+                        else screen.search(request.getString("meal"), request.getString("query"))
+                    File(targetContext.filesDir, "owner-search-result.json").writeText(org.json.JSONArray(rows.map {
+                        JSONObject().put("name", it.name).put("detail", it.detail)
+                    }).toString())
+                    result.putString("stream", "PASS: explicit owner food lookup; nothing selected or saved\n")
+                }
+                "existing-preview" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val input = File(targetContext.filesDir, "custom-request.json")
+                    val request = JSONObject(input.readText())
+                    input.delete()
+                    val screen = FatUi(targetContext)
+                    val meal = request.getString("meal")
+                    val before = screen.snapshot(meal)
+                    try {
+                        val preview = screen.prepareExisting(meal, request.getJSONArray("items").getJSONObject(0)) {}
+                        File(targetContext.filesDir, "existing-preview.json").writeText(JSONObject().put("preview", preview).toString())
+                    } finally { screen.cancelExistingDraft() }
+                    check(screen.snapshot(meal) == before)
+                    result.putString("stream", "PASS: exact existing food and gram portion opened with screen nutrition; cancelled without save; diary unchanged\n")
+                }
+                "custom-dry-run" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val input = File(targetContext.filesDir, "custom-request.json")
+                    val request = JSONObject(input.readText())
+                    input.delete()
+                    val screen = FatUi(targetContext, beforeCustomCommit = { throw PreviewComplete() })
+                    var snapshotFailure: IllegalArgumentException? = null
+                    fun readBefore(): DiarySnapshot? = try { screen.snapshot(request.getString("meal")) }
+                        catch (error: IllegalArgumentException) { snapshotFailure = error; null }
+                    var before = readBefore()
+                    repeat(2) {
+                        if (before?.complete != true) {
+                            Thread.sleep(700)
+                            before = readBefore()
+                        }
+                    }
+                    if (before == null) throw requireNotNull(snapshotFailure)
+                    check(before?.complete == true)
+                    try { CustomMealEngine(store, screen).log(request); error("Save was not intercepted") }
+                    catch (_: PreviewComplete) {}
+                    check(store.get("write_intent").isBlank())
+                    check(screen.snapshot(request.getString("meal")) == before)
+                    result.putString("stream", "PASS: full custom-food form, exact nutrition, private brand and required tag prepared by production recipe; cancelled before any product or diary save; existing diary unchanged\n")
+                }
+                "custom-reconcile" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val output = File(targetContext.filesDir, "custom-result.json")
+                    val previous = JSONObject(output.readText())
+                    check(previous.getString("status") == "uncertain")
+                    val journal = JSONObject(store.get("write_intent"))
+                    check(journal.optString("execution_id").isBlank() || journal.getString("execution_id") == previous.getString("execution_id"))
+                    val receipt = CustomMealEngine(store, FatUi(targetContext)).reconcile().put("execution_id", previous.getString("execution_id"))
+                    output.writeText(receipt.toString())
+                    result.putString("stream", "PASS: read-only complete diary delta confirms existing custom meal; no save action\n")
+                }
+                "custom-finish-owned-form" -> {
+                    check(!AgentService.workerActive)
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val output = File(targetContext.filesDir, "custom-result.json")
+                    val previous = JSONObject(output.readText())
+                    check(previous.getString("stage") in setOf("custom_product_save", "custom_portion"))
+                    val journal = JSONObject(store.get("write_intent"))
+                    if (!journal.has("context")) {
+                        check(inspectedContext.isNotBlank())
+                        store.put("write_intent", journal.put("context", String(android.util.Base64.decode(inspectedContext, android.util.Base64.NO_WRAP), Charsets.UTF_8)).toString())
+                    }
+                    val screen = FatUi(targetContext)
+                    inspectedUi = screen
+                    try {
+                        val receipt = CustomMealEngine(store, screen).finishInspectedForm(previous.getString("stage") == "custom_portion").put("execution_id", previous.getString("execution_id"))
+                        output.writeText(receipt.toString())
+                        result.putString("stream", "PASS: inspected owner form completed and diary verified\n")
+                    } catch (e: Exception) {
+                        previous.put("message", e.message?.take(700)).put("stage", screen.searchState)
+                        output.writeText(previous.toString())
+                        throw e
+                    }
+                }
+                "custom-prewrite-cleanup" -> {
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val previous = JSONObject(File(targetContext.filesDir, "custom-result.json").readText())
+                    val journal = JSONObject(store.get("write_intent"))
+                    check(previous.optString("stage") in setOf("custom_open", "custom_nutrition", "custom_nutrition_done", "custom_nutrition_preview_save", "custom_nutrition_review") || previous.optString("stage").startsWith("custom_field_"))
+                    check(journal.getString("mode") == "custom" && !journal.has("preview"))
+                    FatUi(targetContext).cancelCustomDraft()
+                    store.put("write_intent", "")
+                    result.putString("stream", "PASS: inspected pre-write custom draft cancelled; no product or diary save had begun\n")
+                }
+                "custom-meal" -> {
+                    check(!AgentService.workerActive) { "Emulator must not run another Telegram receiver" }
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val input = File(targetContext.filesDir, "custom-request.json")
+                    val output = File(targetContext.filesDir, "custom-result.json")
+                    check(input.length() in 1..16000)
+                    val request = JSONObject(input.readText())
+                    input.delete()
+                    val screen = FatUi(targetContext)
+                    inspectedUi = screen
+                    try {
+                        val receipt = CustomMealEngine(store, screen, cleanupPrewrite = !request.optBoolean("_inspect_failure")).log(request)
+                        receipt.put("execution_id", request.getString("_execution_id"))
+                        output.writeText(receipt.toString())
+                        result.putString("stream", "PASS: owner custom meal saved and verified\n")
+                    } catch (e: Exception) {
+                        val rawJournal = store.get("write_intent")
+                        val canReconcile = rawJournal.isNotBlank() && JSONObject(rawJournal).has("preview") &&
+                            JSONObject(rawJournal).optString("execution_id") == request.getString("_execution_id")
+                        output.writeText(JSONObject().put("status", if (store.get("write_intent").isBlank()) "failed" else "uncertain")
+                            .put("can_reconcile", canReconcile)
+                            .put("execution_id", request.getString("_execution_id"))
+                            .put("receipts", org.json.JSONArray(store.get("custom_receipts").ifBlank { "[]" }))
+                            .put("message", e.message?.take(700)).put("stage", screen.searchState).toString())
+                        throw e
+                    }
+                }
                 "ui-search-submit" -> {
                     waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
                     val info = mutableListOf<String>()
