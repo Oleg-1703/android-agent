@@ -59,6 +59,10 @@ otherwise preserve the unclear token so matching can fail safely. Never invent a
 different ingredient to make a transcript sound plausible.
 For a meal photo, estimate composition, weight and
 nutrition yourself, mark source=estimate and clearly describe uncertainty in notes.
+Include every identifiable component visible in the meal photo, not just the first
+or largest one. Keep each component's grams and nutrition basis separate in items;
+the executor sums consumed portions into ONE custom diary card for the whole meal.
+Do not sum them a second time or silently omit a photographed side dish.
 If exact meal totals are supplied without a dish name, use the neutral name
 'Приём пищи' instead of asking for a name. Preserve those totals exactly.
 For explicit text macros use source=user; for readable packaging use source=label.

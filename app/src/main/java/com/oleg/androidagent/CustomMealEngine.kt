@@ -79,11 +79,11 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         Meals.validate(plan)
         require(plan.getString("date") == LocalDate.now().toString()) { "Пока поддерживается только сегодняшний дневник." }
         require(store.get("write_intent").isBlank()) { "Предыдущая запись не проверена. Повторное сохранение заблокировано." }
-        val items = plan.objects("items")
-        items.forEach {
+        plan.objects("items").forEach {
             if (it.optString("source") == "existing") require(!it.has("nutrition") && !it.has("barcode"))
             else { require(it.has("nutrition")) { "Для своей еды нужны КБЖУ." }; MealNutrition.validate(it) }
         }
+        val items = WholeMeal.items(plan)
         val receipts = org.json.JSONArray()
         store.put("custom_receipts", receipts.toString())
         for (item in items) {
@@ -130,6 +130,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             store.put("last_result", preview)
             store.put("write_intent", "")
         }
-        return JSONObject().put("status", "complete").put("receipts", receipts).put("notes", plan.optString("notes"))
+        val notes = listOf(plan.optString("notes"), WholeMeal.composition(plan)).filter { it.isNotBlank() }.joinToString("\n")
+        return JSONObject().put("status", "complete").put("receipts", receipts).put("notes", notes)
     }
 }

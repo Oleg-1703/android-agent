@@ -50,6 +50,26 @@ class CustomMealEngineTest {
         assertEquals(1, screen.creations); assertEquals(1, screen.saves)
         assertEquals("", store.get("write_intent"))
     }
+    @Test fun multipleCustomComponentsCreateAndSaveOneCard() {
+        val request = plan()
+        val half = JSONObject(request.getJSONArray("items").getJSONObject(0).toString()).put("grams", "100")
+        request.put("items", org.json.JSONArray().put(half).put(JSONObject(half.toString())))
+        var captured: JSONObject? = null
+        val recording = object : CustomMealScreen by screen {
+            override fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String {
+                captured = item
+                return screen.createCustom(meal, item, onContext)
+            }
+        }
+        val result = CustomMealEngine(store, recording) {}.log(request)
+        assertEquals("complete", result.getString("status"))
+        assertEquals(1, screen.creations)
+        assertEquals(1, screen.saves)
+        assertEquals(1, result.getJSONArray("receipts").length())
+        assertEquals("200", requireNotNull(captured).getString("grams"))
+        assertEquals("209", requireNotNull(captured).getJSONObject("nutrition").getString("calories"))
+        assertTrue(result.getString("notes").contains("Состав:"))
+    }
     @Test fun failedJournalPreventsProductCreation() {
         store.fail = true
         try { engine.log(plan()); fail() } catch (_: IllegalStateException) {}

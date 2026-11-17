@@ -180,7 +180,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     private fun readFrame(): Frame = main {
         requireTodayOnMain()
         val list = nodes("food_journal_new_body").single()
-        val position = requireNotNull(FatAccessibilityService.instance?.lastScroll)
+        val position = FatAccessibilityService.instance?.lastScroll ?: throw FrameRangeMismatch()
         diaryRangeState = "range=${position.from}..${position.to}/${position.count} children=${list.childCount} sameRoot=${position.rootHash == list.hashCode()} sameWindow=${position.window == list.windowId}"
         if (!(position.rootHash == list.hashCode() && position.window == list.windowId &&
             position.from >= 0 && position.to >= position.from && position.count in 1..300 &&
@@ -222,9 +222,8 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         require(text("date_in_navigation_bar").singleOrNull()?.lowercase() in setOf("today", "сегодня"))
     }
     private fun scanDiary(): Map<Int, DiaryRow> {
-        // Force a fresh adapter-range event, including after expansion changes row positions.
-        if (indexedScroll(true)) indexedScroll(false) else if (indexedScroll(false)) indexedScroll(true)
-        indexedTop()
+        // Refresh adapter bounds once, without a return gesture or a reset to the top.
+        if (!indexedScroll(true)) indexedScroll(false)
         val coverage = DiaryCoverage<DiaryRow>()
         fun collect(): Boolean {
             val current = frame()
@@ -325,7 +324,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     }
     private fun openMeal(meal: String) {
         require(meal in Meals.types)
-        diary(); requireToday(); top()
+        diary(); requireToday()
         val labels = when(meal) {
                 "breakfast" -> setOf("breakfast", "завтрак")
                 "lunch" -> setOf("lunch", "обед")
@@ -333,7 +332,14 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 else -> setOf("snacks/other", "перекус/другое", "перекус", "другое")
             }
         var opened = false
+        val visible = main { nodes("food_journal_heading_row_title").filter { it.text?.toString()?.lowercase() in labels } }
+        require(visible.size <= 1) { "Неоднозначный раздел дневника." }
+        if (visible.isNotEmpty()) {
+            main { click(visible.single()) }
+            opened = true
+        } else top()
         for (i in 0 until 12) {
+            if (opened) break
             opened = main {
                 val target = nodes("food_journal_heading_row_title").filter { it.text?.toString()?.lowercase() in labels }
                 require(target.size <= 1) { "Неоднозначный раздел дневника." }
