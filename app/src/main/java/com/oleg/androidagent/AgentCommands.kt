@@ -101,7 +101,13 @@ class AgentCommands(
         val batch = if (message.has("agent_batch")) message.objects("agent_batch") else listOf(message)
         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try {
             if (config.optBoolean("pc_execute_on_phone")) screen.requireReady()
-            CommandReply(brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }) { plan -> CustomMealEngine(store, screen).log(plan) })
+            val progress: (String) -> Unit = { status ->
+                try { telegram.progress(config.getLong("chat_id"), status) }
+                catch (_: java.io.IOException) { /* A lost progress message must not interrupt a diary write. */ }
+            }
+            CommandReply(brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }, progress = progress) { plan ->
+                CustomMealEngine(store, screen, progress = progress).log(plan)
+            })
         }
             catch (_: java.io.IOException) { CommandReply("Не получил результат ПК. Запрос мог сохраниться на ПК. Не отправляй ту же еду повторно; проверь /status.") }
         if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply(brain.jobStatus())

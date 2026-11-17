@@ -124,10 +124,16 @@ class DeviceSmoke : Instrumentation() {
                         JSONObject("""{"basis_grams":"120","calories":"105","protein":"1.3","fat":"0.4","carbs":"27.8"}"""))
                     var claims = 0
                     var reports = 0
+                    var progressMessages = 0
                     var job = ""
                     val client = Http.client().newBuilder().addInterceptor { chain ->
                         val request = chain.request()
                         val value = when {
+                            request.url.host == "api.telegram.org" && request.url.encodedPath.endsWith("/sendMessage") -> {
+                                progressMessages++
+                                if (progressMessages == 1) throw java.io.IOException("QA progress delivery unavailable")
+                                JSONObject().put("ok", true).put("result", JSONObject())
+                            }
                             request.url.encodedPath == "/health" -> JSONObject("""{"status":"ready","provider":"claude-subscription","execution_targets":["phone","emulator"]}""")
                             request.url.encodedPath == "/v1/log" -> {
                                 val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
@@ -162,7 +168,7 @@ class DeviceSmoke : Instrumentation() {
                         val telegram = TelegramApi(config.getString("bot_token"), client)
                         check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
                         check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
-                        check(claims == 1 && reports == 1 && store.get("write_intent").isBlank())
+                        check(claims == 1 && reports == 1 && progressMessages >= 2 && store.get("write_intent").isBlank())
                         check(screen.snapshot("breakfast") == before && receiptFile.readText() == originalReceipt)
                     } finally {
                         client.dispatcher.cancelAll()

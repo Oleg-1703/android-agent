@@ -16,6 +16,10 @@ object TelegramAccess {
         !message.has("forward_origin") && !message.has("forward_date") && !message.has("via_bot")
 }
 class TelegramApi(private val token: String, private val client: OkHttpClient, private val clock: TelegramClock = TelegramClock()) {
+    fun progress(chat: Long, text: String) {
+        val bounded = client.newBuilder().callTimeout(3, java.util.concurrent.TimeUnit.SECONDS).build()
+        TelegramApi(token, bounded, clock).send(chat, text)
+    }
     init { require(token.matches(Regex("[0-9]+:[A-Za-z0-9_-]{20,}"))) { "Invalid Telegram bot token" } }
     private fun call(method: String, fields: Map<String, String>): JSONObject {
         val form = FormBody.Builder().apply { fields.forEach { (k,v) -> add(k,v) } }.build()

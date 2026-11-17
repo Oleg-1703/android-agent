@@ -21,6 +21,7 @@ interface CustomMealScreen {
 /** The owner authorizes exact custom foods; a catalog substitute is never used. */
 class CustomMealEngine(private val store: StateStore, private val ui: CustomMealScreen,
     private val cleanupPrewrite: Boolean = true,
+    private val progress: (String) -> Unit = {},
     private val pause: () -> Unit = { Thread.sleep(700) }) {
     private fun beforeSnapshot(meal: String): DiarySnapshot {
         var failure: IllegalArgumentException? = null
@@ -28,7 +29,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             if (attempt > 0) pause()
             try { return ui.snapshot(meal) } catch (error: IllegalArgumentException) { failure = error }
         }
-        throw requireNotNull(failure)
+        throw IllegalArgumentException("Не удалось прочитать дневник перед записью. Эта еда не добавлена.", failure)
     }
     fun reconcile(): JSONObject {
         val journal = JSONObject(store.get("write_intent"))
@@ -83,10 +84,12 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         val receipts = org.json.JSONArray()
         store.put("custom_receipts", receipts.toString())
         for (item in items) {
+            progress("ИИ разобрал запрос. Открываю FatSecret и читаю дневник перед записью.")
             val before = beforeSnapshot(plan.getString("meal"))
             require(before.complete) { "Не удалось полностью прочитать дневник перед записью. Ничего нового не сохранено." }
             store.put("write_intent", JSONObject().put("mode", "custom").put("execution_id", plan.optString("_execution_id")).put("item", item).put("before", before.json()).toString())
             val existing = item.optString("source") == "existing"
+            progress(if (existing) "Ищу указанную существующую еду в FatSecret." else "Дневник прочитан. Вношу свою еду и КБЖУ в FatSecret.")
             val onContext: (String) -> Unit = { context ->
                 store.put("write_intent", JSONObject(store.get("write_intent")).put("context", context).toString())
             }
@@ -111,6 +114,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             if (diaryName != null) intent.put("diary_name", diaryName)
             store.put("write_intent", intent.toString())
             ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
+            progress("Сохранение отправлено. Проверяю запись в дневнике; повторно сохранять не буду.")
             var verified = false
             for (attempt in 0 until 3) {
                 if (attempt > 0) pause()

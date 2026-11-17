@@ -125,7 +125,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     }
     private fun scrollDiary(forward: Boolean): Boolean {
         val moved = main {
-            val list = nodes("food_journal_new_body").filter { it.isScrollable }
+            val list = nodes("food_journal_new_body")
             require(list.size == 1) { "Не найден список дневника. Открой дневник FatSecret." }
             list.single().performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
         }
@@ -181,7 +181,9 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 when (kind) {
                     "entry" -> it.title.isNotBlank() && it.detail.isNotBlank() && it.calories.isNotBlank()
                     "heading", "summary" -> it.title.isNotBlank()
-                    else -> kind != "other" || child.childCount > 0
+                    // Unknown adapter rows still occupy an index, even when they are empty spacers.
+                    // They remain "other" and are rejected if they occur inside the requested meal.
+                    else -> true
                 }
             }
         }
@@ -194,21 +196,16 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         // Force a fresh adapter-range event, including after expansion changes row positions.
         if (indexedScroll(true)) indexedScroll(false) else if (indexedScroll(false)) indexedScroll(true)
         indexedTop()
-        val rows = sortedMapOf<Int, DiaryRow>()
-        var total = -1
-        for (page in 0 until 60) {
+        val coverage = DiaryCoverage<DiaryRow>()
+        fun collect(): Boolean {
             val current = frame()
-            require(total == -1 || total == current.count) { "Дневник изменился во время чтения." }
-            total = current.count
-            current.rows.forEachIndexed { index, row ->
-                if (row == null) return@forEachIndexed
-                val position = current.from + index
-                require(rows[position] == null || rows[position] == row) { "Строка дневника изменилась во время чтения." }
-                rows[position] = row
-            }
-            if (rows.size == total && rows.keys.first() == 0 && rows.keys.last() == total - 1) return rows
-            if (!indexedScroll(true)) break
+            return coverage.add(current.from, current.count, current.rows)
         }
+        for (forward in listOf(true, false)) for (page in 0 until 60) {
+            if (collect()) return coverage.rows
+            if (!indexedScroll(forward)) break
+        }
+        diaryRangeState += " missing=" + coverage.missing()
         throw IllegalArgumentException("Не удалось прочитать весь дневник. Проверь запись вручную.")
     }
     private fun indexedScroll(forward: Boolean): Boolean {

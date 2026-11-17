@@ -85,7 +85,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         return Request.Builder().url(endpoint(config.optString("pc_url")).newBuilder().addPathSegments(path).build())
             .header("Authorization", "Bearer $token")
     }
-    fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
+    fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
         require(messages.size in 1..10)
         val payload = JSONObject().put("date", LocalDate.now().toString())
         val descriptions = messages.map { it.optString("text", it.optString("caption")) }.filter { it.isNotBlank() }
@@ -130,8 +130,10 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
             } else receipt(result)
         }
         if (response.optString("status") !in setOf("queued", "running")) return finish(response)
+        progress("Запрос получен на ПК. ИИ распознаёт еду и рассчитывает КБЖУ по подписке. Сообщу о переходе к записи.")
         for (attempt in 0 until 200) {
             Thread.sleep(3000)
+            if (attempt > 0 && attempt % 10 == 0) progress("ПК ещё обрабатывает запрос. Еду повторно отправлять не нужно; сообщу результат здесь.")
             val status = JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))
             if (status.optString("status") !in setOf("queued", "running")) return finish(status)
         }

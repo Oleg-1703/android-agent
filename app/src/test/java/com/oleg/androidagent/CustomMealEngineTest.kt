@@ -66,6 +66,30 @@ class CustomMealEngineTest {
         try { engine.log(plan()); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(0, screen.creations)
     }
+    @Test fun prewriteReadFailureReportsNoWriteAndKeepsNoJournal() {
+        var reads = 0
+        val failing = object : CustomMealScreen by screen {
+            override fun snapshot(meal: String): DiarySnapshot {
+                reads++
+                throw IllegalArgumentException("Missing adapter row")
+            }
+        }
+        try { CustomMealEngine(store, failing) {}.log(plan()); fail() }
+        catch (error: IllegalArgumentException) { assertTrue(error.message.orEmpty().contains("Эта еда не добавлена")) }
+        assertEquals(3, reads)
+        assertEquals(0, screen.creations)
+        assertEquals(0, screen.saves)
+        assertEquals("", store.get("write_intent"))
+    }
+    @Test fun progressSeparatesReadingWritingAndVerification() {
+        val stages = mutableListOf<String>()
+        CustomMealEngine(store, screen, progress = { stages.add(it) }) {}.log(plan())
+        assertEquals(3, stages.size)
+        assertTrue(stages[0].contains("читаю дневник"))
+        assertTrue(stages[1].contains("Вношу свою еду"))
+        assertTrue(stages[2].contains("Проверяю запись"))
+        assertEquals(1, screen.saves)
+    }
     @Test fun nutritionCannotBeSilentlyDoubled() {
         screen.wrongNutrition = true
         try { engine.log(plan()); fail() } catch (_: IllegalArgumentException) {}
