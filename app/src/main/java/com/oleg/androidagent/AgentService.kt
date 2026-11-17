@@ -138,7 +138,7 @@ class AgentService : Service() {
                         store.put("last_message", System.currentTimeMillis().toString())
                         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) {
                             val destination = if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "в эмуляторе ПК"
-                            val waiting = if (MealBatch.waitingForVoice(listOf(message))) "Фото без подписи: жду голосовой комментарий до 2,5 минут, экран можно выключить. Для обработки без этой паузы добавь подпись к фото." else "Соберу соседние сообщения за 8 секунд и отправлю ИИ на ПК. Экран можно выключить."
+                            val waiting = if (MealBatch.waitingForVoice(listOf(message))) "Жду голосовой комментарий к фото. Экран можно выключить." else "Собираю описание для ИИ на ПК. Экран можно выключить."
                             telegram.send(owner, "Принял. $waiting Еду запишу в FatSecret $destination.")
                             val batch = mutableListOf(message)
                             val started = SystemClock.elapsedRealtime()

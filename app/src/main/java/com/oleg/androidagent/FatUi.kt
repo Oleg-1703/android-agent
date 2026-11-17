@@ -113,8 +113,14 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     fun diary(allowDraft: Boolean = false) {
         requireReady()
         val intent = requireNotNull(context.packageManager.getLaunchIntentForPackage(FatAccessibilityService.FATSECRET_PACKAGE)) { "Установи FatSecret." }
-        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        waitFor { root().packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE }
+        val alreadyOpen = main { FatAccessibilityService.instance?.rootInActiveWindow?.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE }
+        if (!alreadyOpen) context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        waitFor {
+            root()
+            nodes("tab_food").size == 1 || text("actionbar_title").any { it.isNotBlank() } ||
+                nodes("fem_save_btn").isNotEmpty() || nodes("multi_add_save_section_holder").isNotEmpty() ||
+                visibleNodes("food_journal_settings_list_view_text").isNotEmpty()
+        }
         repeat(5) {
             if (!allowDraft) main {
                 require(nodes("fem_save_btn").isEmpty() && nodes("multi_add_save_section_holder").isEmpty()) {
@@ -190,12 +196,15 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 "heading" -> DiaryRow(kind, field(child, "food_journal_heading_row_title"), "", field(child, "food_journal_heading_row_total_calories"))
                 "summary" -> DiaryRow(kind, field(child, "food_journal_subtitle_nutrition_info"), "", "")
                 "entry" -> DiaryRow(kind, field(child, "food_journal_item_row_title"), field(child, "food_journal_item_row_details"), field(child, "food_journal_item_row_title_energy"))
+                "footer" -> DiaryRow(kind, "", if (child.findAccessibilityNodeInfosByViewId(prefix + "food_journal_show_less").isNotEmpty()) "expanded" else "", "")
                 else -> DiaryRow(kind, "", "", "")
             }
             value.takeIf {
                 when (kind) {
                     "entry" -> it.title.isNotBlank() && it.detail.isNotBlank() && it.calories.isNotBlank()
-                    "heading", "summary" -> it.title.isNotBlank()
+                    "heading" -> it.title.isNotBlank()
+                    "summary" -> it.title.isNotBlank() || child.findAccessibilityNodeInfosByViewId(prefix + "food_journal_expand_collapse_header_icon")
+                        .singleOrNull()?.isVisibleToUser == true
                     // Unknown adapter rows still occupy an index, even when they are empty spacers.
                     // They remain "other" and are rejected if they occur inside the requested meal.
                     else -> true
@@ -221,7 +230,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             if (!indexedScroll(forward)) break
         }
         diaryRangeState += " missing=" + coverage.missing()
-        throw IllegalArgumentException("Не удалось прочитать весь дневник. Проверь запись вручную.")
+        throw DiaryReadFailure("Не удалось прочитать весь дневник. Проверь запись вручную.")
     }
     private fun indexedScroll(forward: Boolean): Boolean {
         val sequence = FatAccessibilityService.instance?.lastScroll?.sequence ?: 0
@@ -248,20 +257,19 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             require(java.time.LocalDate.now().toString() == date)
             return DiarySnapshot(date, meal, emptyList(), true)
         }
-        val summary = content.firstOrNull { it.second.kind == "summary" }
+        var summary = content.firstOrNull { it.second.kind == "summary" }
             ?: throw IllegalArgumentException("Не найден счётчик продуктов FatSecret.")
-        val count = Regex("^([0-9]+)\\s+(?:items?|продукт[а-я]*)\\b", RegexOption.IGNORE_CASE)
-            .find(summary.second.title)?.groupValues?.get(1)?.toIntOrNull()
-            ?: throw IllegalArgumentException("Неизвестный формат счётчика продуктов FatSecret.")
-        if (count > 0 && content.none { it.second.kind == "entry" }) {
+        var expectedCount = DiarySectionProof.count(summary.second.title)
+        if (expectedCount != 0 && content.none { it.second.kind == "entry" }) {
+            val original = summary
             indexedTop()
             var expanded = false
             for (page in 0 until 60) {
                 val current = frame()
-                if (summary.first in current.from until current.from + current.rows.size) {
+                if (original.first in current.from until current.from + current.rows.size) {
                     main {
                         val list = nodes("food_journal_new_body").single()
-                        val holder = requireNotNull(list.getChild(summary.first - current.from))
+                        val holder = requireNotNull(list.getChild(original.first - current.from))
                         require(holder.viewIdResourceName == prefix + "food_journal_nutrition_holder")
                         val icon = holder.findAccessibilityNodeInfosByViewId(prefix + "food_journal_expand_collapse_header_icon").single()
                         click(icon)
@@ -275,13 +283,17 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             require(expanded) { "Не удалось раскрыть продукты приёма пищи." }
             rows = scanDiary()
             content = section(rows)
-            require(content.first { it.second.kind == "summary" }.second.title == summary.second.title)
+            summary = content.first { it.second.kind == "summary" }
+            if (expectedCount != null) require(summary.second.title == original.second.title)
+            expectedCount = DiarySectionProof.count(summary.second.title)
         }
         val entries = content.filter { it.second.kind == "entry" }.map { (_, row) ->
             require(row.title.isNotBlank() && row.detail.isNotBlank() && row.calories.matches(Regex("[0-9]+")))
             DiaryEntry(row.title, row.detail, row.calories)
         }
-        require(entries.size == count && content.none { it.second.kind == "other" }) { "Состав приёма пищи прочитан не полностью." }
+        if (!DiarySectionProof.complete(expectedCount, entries.size,
+                content.any { it.second.kind == "footer" && it.second.detail == "expanded" },
+                content.any { it.second.kind == "other" })) throw DiaryReadFailure("Состав приёма пищи прочитан не полностью.")
         require(java.time.LocalDate.now().toString() == date) { "Дата изменилась во время чтения." }
         return DiarySnapshot(date, meal, entries, true)
     }

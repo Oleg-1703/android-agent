@@ -27,7 +27,10 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         var failure: IllegalArgumentException? = null
         for (attempt in 0 until 3) {
             if (attempt > 0) pause()
-            try { return ui.snapshot(meal) } catch (error: IllegalArgumentException) { failure = error }
+            try { return ui.snapshot(meal) } catch (error: IllegalArgumentException) {
+                failure = error
+                if (error is DiaryReadFailure) break
+            }
         }
         throw IllegalArgumentException("Не удалось прочитать дневник перед записью. Эта еда не добавлена.", failure)
     }

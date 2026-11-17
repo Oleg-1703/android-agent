@@ -81,6 +81,21 @@ class CustomMealEngineTest {
         assertEquals(0, screen.saves)
         assertEquals("", store.get("write_intent"))
     }
+    @Test fun exhaustedDiaryScanDoesNotRepeatTheSameTraversal() {
+        var reads = 0
+        val failing = object : CustomMealScreen by screen {
+            override fun snapshot(meal: String): DiarySnapshot {
+                reads++
+                throw DiaryReadFailure("Missing row after both bounded passes")
+            }
+        }
+        try { CustomMealEngine(store, failing) {}.log(plan()); fail() }
+        catch (error: IllegalArgumentException) { assertTrue(error.message.orEmpty().contains("Эта еда не добавлена")) }
+        assertEquals(1, reads)
+        assertEquals(0, screen.creations)
+        assertEquals(0, screen.saves)
+        assertEquals("", store.get("write_intent"))
+    }
     @Test fun progressSeparatesReadingWritingAndVerification() {
         val stages = mutableListOf<String>()
         CustomMealEngine(store, screen, progress = { stages.add(it) }) {}.log(plan())

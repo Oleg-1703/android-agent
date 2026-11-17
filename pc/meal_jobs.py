@@ -79,7 +79,7 @@ class Emulator:
         return result
 
     def instrument(self, phase):
-        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview", "diary-sections", "custom-cancel-dry-run", "phone-direct-dry-run", "phone-deferred-dry-run"}:
+        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview", "diary-sections", "diary-collapsed-regression", "diary-detail-setup", "diary-list-restore", "diary-expand-first", "diary-scan-repro", "diary-summary-metadata", "custom-cancel-dry-run", "phone-direct-dry-run", "phone-deferred-dry-run"}:
             raise ValueError("Unsupported fixed executor phase")
         current = self.run("shell", "settings", "get", "secure", "enabled_accessibility_services").decode().strip()
         others = [s for s in current.split(":") if s and s != "null" and not s.startswith("com.oleg.androidagent/")]

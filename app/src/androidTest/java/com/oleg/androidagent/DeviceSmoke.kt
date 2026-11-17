@@ -22,6 +22,46 @@ class DeviceSmoke : Instrumentation() {
     private var reviewedTest = false
     private var inspectedContext = ""
     private var inspectedUi: FatUi? = null
+    private fun testMain(block: () -> Unit) {
+        val task = java.util.concurrent.FutureTask(block, Unit)
+        runOnMainSync(task)
+        try { task.get() } catch (error: java.util.concurrent.ExecutionException) { throw requireNotNull(error.cause) }
+    }
+    private fun setDiaryView(id: String) {
+        val prefix = "com.fatsecret.android:id/"
+        fun click(node: android.view.accessibility.AccessibilityNodeInfo) {
+            var target = node
+            var parents = 0
+            while (!target.isClickable && parents++ < 4) target = requireNotNull(target.parent)
+            check(target.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE && target.isClickable)
+            check(target.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+        }
+        var opened = false
+        for (page in 0 until 30) {
+            var moved = false
+            testMain {
+                val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+                check(root.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE)
+                val settings = root.findAccessibilityNodeInfosByViewId(prefix + "food_journal_summary_row_settings").filter { it.isVisibleToUser }
+                if (settings.size == 1) { click(settings.single()); opened = true }
+                else moved = root.findAccessibilityNodeInfosByViewId(prefix + "food_journal_new_body").single()
+                    .performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            }
+            if (opened || !moved) break
+            SystemClock.sleep(450)
+        }
+        check(opened)
+        waitUntil("Diary view options not shown") {
+            FatAccessibilityService.instance?.rootInActiveWindow?.findAccessibilityNodeInfosByViewId(prefix + id)?.any { it.isVisibleToUser } == true
+        }
+        testMain {
+            val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+            val option = root.findAccessibilityNodeInfosByViewId(prefix + id).single { it.isVisibleToUser }
+            if (option.isEnabled) click(option)
+            else check(requireNotNull(FatAccessibilityService.instance).performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+        }
+        SystemClock.sleep(700)
+    }
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         phase = arguments?.getString("phase") ?: "write"
@@ -87,7 +127,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("screen-lease", "phone-deferred-dry-run", "phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("diary-summary-metadata", "diary-expand-first", "diary-detail-setup", "diary-list-restore", "diary-scan-repro", "diary-collapsed-regression", "screen-lease", "phone-deferred-dry-run", "phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -254,6 +294,101 @@ class DeviceSmoke : Instrumentation() {
                     FatUi(targetContext).cancelCustomDraft()
                     store.put("write_intent", "")
                     result.putString("stream", "PASS: interrupted precommit dry-run cancelled; completed diary receipt preserved\n")
+                }
+                "diary-summary-metadata" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val screen = FatUi(targetContext)
+                    val top = FatUi::class.java.getDeclaredMethod("indexedTop").apply { isAccessible = true }
+                    top.invoke(screen)
+                    runOnMainSync {
+                        val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+                        check(root.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE)
+                        val prefix = "com.fatsecret.android:id/"
+                        val rows = root.findAccessibilityNodeInfosByViewId(prefix + "food_journal_nutrition_holder").map { row ->
+                            val values = row.findAccessibilityNodeInfosByViewId(prefix + "food_journal_subtitle_nutrition_info").map { node ->
+                                JSONObject().put("text", node.text?.toString().orEmpty()).put("visible", node.isVisibleToUser)
+                            }
+                            JSONObject().put("counter", org.json.JSONArray(values)).put("table_visible", row.findAccessibilityNodeInfosByViewId(prefix + "food_journal_header_row_nutrients").any { it.isVisibleToUser })
+                        }
+                        File(targetContext.filesDir, "diary-summary-metadata.json").writeText(org.json.JSONArray(rows).toString())
+                    }
+                    result.putString("stream", "PASS: local-only summary metadata saved; no meal actions\n")
+                }
+                "diary-expand-first" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    runOnMainSync {
+                        val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+                        check(root.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE)
+                        val icon = root.findAccessibilityNodeInfosByViewId("com.fatsecret.android:id/food_journal_expand_collapse_header_icon").first { it.isVisibleToUser }
+                        check(icon.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+                    }
+                    result.putString("stream", "PASS: toggled first visible meal expansion only; no food actions\n")
+                }
+                "diary-detail-setup", "diary-list-restore" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    setDiaryView(if (phase == "diary-detail-setup") "food_journal_settings_detail_view_text" else "food_journal_settings_list_view_text")
+                    result.putString("stream", "PASS: changed emulator diary display only; no food actions\n")
+                }
+                "diary-scan-repro" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val screen = FatUi(targetContext)
+                    inspectedUi = screen
+                    val method = FatUi::class.java.getDeclaredMethod("scanDiary").apply { isAccessible = true }
+                    try { method.invoke(screen) } catch (error: java.lang.reflect.InvocationTargetException) { throw error.targetException }
+                    result.putString("stream", "PASS: complete adapter scan in the selected display mode; read-only\n")
+                }
+                "diary-collapsed-regression" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val screen = FatUi(targetContext)
+                    inspectedUi = screen
+                    val before = screen.snapshot("breakfast")
+                    check(before.entries.isNotEmpty())
+                    val lunch = screen.snapshot("lunch")
+                    fun top() {
+                        for (page in 0 until 20) {
+                            var moved = false
+                            runOnMainSync {
+                                val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+                                check(root.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE)
+                                moved = root.findAccessibilityNodeInfosByViewId("com.fatsecret.android:id/food_journal_new_body").single()
+                                    .performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                            }
+                            if (!moved) return
+                            SystemClock.sleep(450)
+                        }
+                        error("Diary did not reach top")
+                    }
+                    fun toggle() {
+                        top()
+                        runOnMainSync {
+                            val root = requireNotNull(FatAccessibilityService.instance?.rootInActiveWindow)
+                            val holder = root.findAccessibilityNodeInfosByViewId("com.fatsecret.android:id/food_journal_nutrition_holder").first()
+                            val icon = holder.findAccessibilityNodeInfosByViewId("com.fatsecret.android:id/food_journal_expand_collapse_header_icon").single()
+                            var target = icon
+                            var parents = 0
+                            while (!target.isClickable && parents++ < 4) target = requireNotNull(target.parent)
+                            check(target.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE && target.isClickable)
+                            check(target.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+                        }
+                        SystemClock.sleep(450)
+                    }
+                    try {
+                        setDiaryView("food_journal_settings_list_view_text")
+                        check(screen.snapshot("breakfast") == before && screen.snapshot("lunch") == lunch)
+                        for (view in listOf("food_journal_settings_detail_view_text", "food_journal_settings_summary_view_text")) {
+                            setDiaryView(view)
+                            check(screen.snapshot("breakfast") == before)
+                            toggle()
+                            check(screen.snapshot("lunch") == lunch)
+                            check(screen.snapshot("breakfast") == before)
+                        }
+                        result.putString("stream", "PASS: list, detailed and summary display yield exactly the same complete entries; collapsed unrelated breakfast does not block lunch; selected collapsed meal expands; no Save\n")
+                    } finally { setDiaryView("food_journal_settings_list_view_text") }
                 }
                 "diary-sections" -> {
                     check(!AgentService.workerActive)
