@@ -79,7 +79,7 @@ class Emulator:
         return result
 
     def instrument(self, phase):
-        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview", "diary-sections", "custom-cancel-dry-run"}:
+        if phase not in {"custom-meal", "custom-reconcile", "custom-dry-run", "owner-search", "existing-preview", "diary-sections", "custom-cancel-dry-run", "phone-direct-dry-run"}:
             raise ValueError("Unsupported fixed executor phase")
         current = self.run("shell", "settings", "get", "secure", "enabled_accessibility_services").decode().strip()
         others = [s for s in current.split(":") if s and s != "null" and not s.startswith("com.oleg.androidagent/")]
@@ -111,6 +111,10 @@ class MealJobs:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL)")
             db.execute("UPDATE jobs SET state='uncertain', result=? WHERE state IN ('queued','running')",
                        (json.dumps({"message": "ПК перезапустился во время обработки. Проверь дневник; автоматического повтора не будет."}),))
+            for key, raw in db.execute("SELECT id,result FROM jobs WHERE state='executing'").fetchall():
+                result = json.loads(raw)
+                result['message'] = 'Связь с исполнением на телефоне прервалась. Проверь дневник; автоматического повтора нет.'
+                db.execute("UPDATE jobs SET state='uncertain',result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), key))
 
     @contextmanager
     def connection(self):
@@ -126,10 +130,49 @@ class MealJobs:
             row = db.execute("SELECT state,result FROM jobs WHERE id=?", (key,)).fetchone()
         if row is None:
             return None
-        result = {"status": row[0], **json.loads(row[1])}
+        result = {**json.loads(row[1]), "status": row[0]}
         if row[0] == "failed":
             result["message"] = "Последний запрос завершился ошибкой.\n" + result.get("message", "Запись не выполнена.")
         return result
+
+    def claim_phone(self, key):
+        with self.lock, self.connection() as db:
+            row = db.execute('SELECT state,result FROM jobs WHERE id=?', (key,)).fetchone()
+            if row is None:
+                raise ValueError('unknown_job')
+            data = json.loads(row[1])
+            if data.get('target') != 'phone':
+                raise ValueError('wrong_executor')
+            if row[0] != 'prepared':
+                return {'status': 'already_started', 'message': 'Этот запрос уже начинал выполняться. Автоматический повтор запрещён.'}
+            result = {'target': 'phone', 'message': 'Запись выполняется на телефоне.'}
+            db.execute("UPDATE jobs SET state='executing',result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), key))
+        return {'status': 'claimed'}
+
+    def finish_phone(self, key, result):
+        if not isinstance(result, dict) or result.get('status') not in {'complete', 'failed', 'uncertain'}:
+            raise ValueError('invalid_receipt')
+        if set(result) - {'status', 'receipts', 'message', 'notes', 'sources', 'stage'}:
+            raise ValueError('invalid_receipt')
+        receipts = result.get('receipts', [])
+        if not isinstance(receipts, list) or len(receipts) > 10:
+            raise ValueError('invalid_receipt')
+        for row in receipts:
+            if not isinstance(row, dict) or not isinstance(row.get('preview'), str) or not 1 <= len(row['preview']) <= 3000:
+                raise ValueError('invalid_receipt')
+        if result['status'] == 'complete' and not receipts:
+            raise ValueError('empty_receipt')
+        data = {**result, 'target': 'phone'}
+        with self.lock, self.connection() as db:
+            old = db.execute('SELECT state,result FROM jobs WHERE id=?', (key,)).fetchone()
+            if old is None or json.loads(old[1]).get('target') != 'phone':
+                raise ValueError('wrong_executor')
+            if old[0] not in {'executing', 'uncertain'}:
+                if json.loads(old[1]) == data:
+                    return {'status': 'accepted'}
+                raise ValueError('receipt_conflict')
+            db.execute('UPDATE jobs SET state=?,result=? WHERE id=?', (result['status'], json.dumps(data, ensure_ascii=False), key))
+        return {'status': 'accepted'}
 
     def submit(self, key, payload):
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32,64}", key):
@@ -153,7 +196,7 @@ class MealJobs:
         try:
             result = self.processor({**payload, "_execution_id": key})
             state = result.get("status", "complete")
-            if state not in {"complete", "failed", "uncertain"}:
+            if state not in {"complete", "failed", "uncertain", "prepared"}:
                 raise RuntimeError("Неизвестное состояние записи. Проверь дневник.")
         except ValueError as error:
             state, result = "failed", {"message": str(error)[:700]}

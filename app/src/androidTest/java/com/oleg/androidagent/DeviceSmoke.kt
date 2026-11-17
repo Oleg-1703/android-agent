@@ -17,7 +17,7 @@ import java.io.File
 
 /** Test APK only. Refuses physical devices and never exports configured secrets. */
 class DeviceSmoke : Instrumentation() {
-    private class PreviewComplete : RuntimeException()
+    private class PreviewComplete : RuntimeException("QA_CANCELLED_BEFORE_SAVE")
     private var phase = "write"
     private var reviewedTest = false
     private var inspectedContext = ""
@@ -87,7 +87,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -108,6 +108,69 @@ class DeviceSmoke : Instrumentation() {
                         JSONObject().put("name", it.name).put("detail", it.detail)
                     }).toString())
                     result.putString("stream", "PASS: explicit owner food lookup; nothing selected or saved\n")
+                }
+                "phone-direct-dry-run" -> {
+                    check(!AgentService.workerActive && store.get("write_intent").isBlank())
+                    waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
+                    val screen = FatUi(targetContext, beforeCustomCommit = { throw PreviewComplete() })
+                    inspectedUi = screen
+                    val before = screen.snapshot("breakfast")
+                    val oldLast = store.get("pc_last_job")
+                    val oldReceipts = store.get("custom_receipts")
+                    val receiptFile = File(targetContext.filesDir, "custom-result.json")
+                    val originalReceipt = receiptFile.readText()
+                    val plan = Meals.parse("/meal ${java.time.LocalDate.now()} breakfast Банан=120")
+                    plan.getJSONArray("items").getJSONObject(0).put("source", "estimate").put("nutrition",
+                        JSONObject("""{"basis_grams":"120","calories":"105","protein":"1.3","fat":"0.4","carbs":"27.8"}"""))
+                    var claims = 0
+                    var reports = 0
+                    var job = ""
+                    val client = Http.client().newBuilder().addInterceptor { chain ->
+                        val request = chain.request()
+                        val value = when {
+                            request.url.encodedPath == "/health" -> JSONObject("""{"status":"ready","provider":"claude-subscription","execution_targets":["phone","emulator"]}""")
+                            request.url.encodedPath == "/v1/log" -> {
+                                val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
+                                val body = JSONObject(buffer.readUtf8())
+                                check(body.getString("target") == "phone")
+                                job = body.getString("request_id")
+                                JSONObject().put("status", "prepared").put("target", "phone").put("plan", plan)
+                            }
+                            request.url.encodedPath.endsWith("/claim") -> {
+                                check(JSONObject(store.get("phone_job_$job")).getString("state") == "claiming")
+                                check(++claims == 1)
+                                JSONObject().put("status", "claimed")
+                            }
+                            request.url.encodedPath.endsWith("/receipt") -> {
+                                val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
+                                val body = JSONObject(buffer.readUtf8())
+                                check(body.getString("status") == "failed" && body.getString("message") == "QA_CANCELLED_BEFORE_SAVE")
+                                check(body.getJSONArray("receipts").length() == 0)
+                                reports++
+                                JSONObject().put("status", "accepted")
+                            }
+                            else -> error("Unexpected request")
+                        }
+                        okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, value.toString())).build()
+                    }.build()
+                    val config = JSONObject().put("pc_url", "https://pc.example.invalid/").put("pc_pairing", "fixture-pairing-".repeat(3))
+                        .put("pc_consent", true).put("pc_execute_on_phone", true).put("chat_id", "1").put("bot_token", "1:" + "x".repeat(24))
+                    val message = JSONObject().put("message_id", System.currentTimeMillis()).put("text", "Завтрак 1 банан")
+                    try {
+                        val commands = AgentCommands(store, config, FatSecretApi(config, client), client, screen)
+                        val telegram = TelegramApi(config.getString("bot_token"), client)
+                        check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
+                        check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
+                        check(claims == 1 && reports == 1 && store.get("write_intent").isBlank())
+                        check(screen.snapshot("breakfast") == before && receiptFile.readText() == originalReceipt)
+                    } finally {
+                        client.dispatcher.cancelAll()
+                        store.put("pc_last_job", oldLast)
+                        if (store.get("write_intent").isBlank()) store.put("custom_receipts", oldReceipts)
+                        if (job.isNotBlank()) store.put("phone_job_$job", "")
+                    }
+                    result.putString("stream", "PASS: phone dispatcher, capability check, single durable claim, native FatSecret custom form and receipt; duplicate delivery did not execute again; cancelled before save; diary unchanged\n")
                 }
                 "custom-cancel-dry-run" -> {
                     check(!AgentService.workerActive)
@@ -510,6 +573,42 @@ class DeviceSmoke : Instrumentation() {
                     check(store.get("device_smoke") == marker) { "Keystore decrypt after force-stop failed" }
                     targetContext.getSharedPreferences("agent_private", 0).edit().remove("device_smoke").commit()
                     result.putString("stream", "PASS: encrypted state survives force-stop/process restart\n")
+                }
+                "phone-mode-settings" -> {
+                    check(!AgentService.workerActive && store.config().length() == 0)
+                    var activity = launch()
+                    try {
+                        click(activity, "ИИ")
+                        runOnMainSync {
+                            val checkbox = views(activity.window.decorView).filterIsInstance<android.widget.CheckBox>()
+                                .single { it.text.toString() == "Записывать в FatSecret на этом телефоне" }
+                            check(!checkbox.isChecked)
+                        }
+                        click(activity, "Записывать в FatSecret на этом телефоне")
+                        click(activity, "Сохранить подключение ПК")
+                        check(store.config().getBoolean("pc_execute_on_phone") && !store.config().getBoolean("pc_consent"))
+                        val monitor = addMonitor(IntentFilter(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS), ActivityResult(Activity.RESULT_CANCELED, null), true)
+                        try {
+                            click(activity, "Открыть настройки управления телефоном")
+                            check(monitor.hits == 1)
+                        } finally { removeMonitor(monitor) }
+                        runOnMainSync { activity.finish() }
+                        waitForIdleSync()
+                        activity = launch()
+                        click(activity, "ИИ")
+                        runOnMainSync {
+                            check(views(activity.window.decorView).filterIsInstance<android.widget.CheckBox>()
+                                .single { it.text.toString() == "Записывать в FatSecret на этом телефоне" }.isChecked)
+                        }
+                        click(activity, "Записывать в FatSecret на этом телефоне")
+                        click(activity, "Сохранить подключение ПК")
+                        check(!store.config().getBoolean("pc_execute_on_phone"))
+                        check(!AgentService.workerActive)
+                    } finally {
+                        runOnMainSync { activity.finish() }
+                        store.put("config", "")
+                    }
+                    result.putString("stream", "PASS: phone/emulator selector persisted across Activity restart, consent retained independently, system Accessibility settings opened without any meal confirmation\n")
                 }
                 "ui" -> {
                     check(store.config().length() == 0) { "Use empty configuration" }

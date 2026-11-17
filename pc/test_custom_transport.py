@@ -6,7 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import brain
 
@@ -58,6 +58,34 @@ class CustomTransportTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/v1/log', self.payload(), token='wrong')[0], 401)
         self.assertEqual(self.request('GET', '/v1/jobs/' + 'a' * 64, token='wrong')[0], 401)
         self.processor.assert_not_called()
+
+    def test_phone_claim_and_receipt_require_pairing_and_follow_the_lifecycle(self):
+        body = self.payload()
+        body['target'] = 'phone'
+        self.processor.return_value = {'status': 'prepared', 'target': 'phone', 'plan': {'items': []}}
+        self.request('POST', '/v1/log', body)
+        for _ in range(100):
+            if self.request('GET', '/v1/jobs/' + body['request_id'])[1]['status'] == 'prepared':
+                break
+            time.sleep(.01)
+        path = '/v1/jobs/' + body['request_id']
+        self.assertEqual(self.request('POST', path + '/claim', {}, token='wrong')[0], 401)
+        self.assertEqual(self.request('POST', path + '/claim', {})[1]['status'], 'claimed')
+        self.assertEqual(self.request('POST', path + '/claim', {})[1]['status'], 'already_started')
+        receipt = {'status': 'complete', 'receipts': [{'preview': 'verified on phone'}]}
+        self.assertEqual(self.request('POST', path + '/receipt', receipt, token='wrong')[0], 401)
+        self.assertEqual(self.request('POST', path + '/receipt', receipt)[1]['status'], 'accepted')
+        self.assertEqual(self.request('GET', path)[1]['status'], 'complete')
+
+    @patch.object(brain, 'Emulator')
+    @patch.object(brain, 'parse_meal')
+    def test_phone_preparation_never_constructs_or_calls_emulator(self, parse, emulator):
+        parse.return_value = {'date': '2026-11-17', 'meal': 'breakfast', 'question': '', 'items': [
+            {'query': 'Fixture', 'grams': '100', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}
+        result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17', 'target': 'phone', '_execution_id': 'a' * 64})
+        self.assertEqual(result['status'], 'prepared')
+        self.assertEqual(result['plan']['_execution_id'], 'a' * 64)
+        emulator.assert_not_called()
 
     def test_remote_image_urls_and_reused_ids_with_different_data_are_rejected(self):
         body = self.payload()

@@ -97,6 +97,46 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.jobs.get(key), self.jobs.get(key))
         self.assertEqual(self.processor.call_count, 1)
 
+    def prepare_phone(self, key='b' * 64):
+        self.processor.return_value = {'status': 'prepared', 'target': 'phone', 'plan': {'items': []}}
+        self.jobs.submit(key, {'target': 'phone', 'text': 'fixture'})
+        self.assertEqual(self.done(key)['status'], 'prepared')
+        return key
+
+    def test_phone_claim_is_granted_only_once(self):
+        key = self.prepare_phone()
+        self.assertEqual(self.jobs.claim_phone(key)['status'], 'claimed')
+        self.assertEqual(self.jobs.claim_phone(key)['status'], 'already_started')
+        self.assertEqual(self.jobs.get(key)['status'], 'executing')
+        self.assertEqual(self.processor.call_count, 1)
+
+    def test_phone_receipt_is_idempotent_and_cannot_precede_claim(self):
+        key = self.prepare_phone()
+        receipt = {'status': 'complete', 'receipts': [{'preview': 'verified fixture'}]}
+        with self.assertRaises(ValueError):
+            self.jobs.finish_phone(key, receipt)
+        self.jobs.claim_phone(key)
+        for _ in range(2):
+            self.assertEqual(self.jobs.finish_phone(key, receipt)['status'], 'accepted')
+        self.assertEqual(self.jobs.get(key)['status'], 'complete')
+        with self.assertRaises(ValueError):
+            self.jobs.finish_phone(key, {'status': 'failed', 'message': 'overwrite'})
+
+    def test_restarted_phone_execution_never_gets_another_claim(self):
+        key = self.prepare_phone()
+        self.jobs.claim_phone(key)
+        self.jobs.close()
+        self.jobs = MealJobs(self.path, self.processor)
+        self.assertEqual(self.jobs.get(key)['status'], 'uncertain')
+        self.assertEqual(self.jobs.claim_phone(key)['status'], 'already_started')
+        self.jobs.finish_phone(key, {'status': 'complete', 'receipts': [{'preview': 'phone cached proof'}]})
+        self.assertEqual(self.jobs.get(key)['status'], 'complete')
+
+    def test_executor_cannot_change_for_the_same_message_id(self):
+        key = self.prepare_phone()
+        with self.assertRaises(ValueError):
+            self.jobs.submit(key, {'target': 'emulator', 'text': 'fixture'})
+
     def test_explicit_existing_food_uses_screen_values_without_model_macros(self):
         plan = {'meal': 'dinner', 'items': [{'query': 'Chicken roll small', 'grams': '200', 'source': 'existing'}]}
         self.assertEqual(validate_plan(plan), plan)

@@ -111,7 +111,8 @@ class AgentService : Service() {
                         }
                         store.put("last_message", System.currentTimeMillis().toString())
                         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) {
-                            telegram.send(owner, "Принял. Объединяю описание, фото и голос в один запрос. Результат запишу как свою еду в FatSecret на ПК.")
+                            val destination = if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "в эмуляторе ПК"
+                            telegram.send(owner, "Принял. Объединяю описание, фото и голос в один запрос. ИИ обработает его на ПК, еду запишу в FatSecret $destination.")
                             val batch = mutableListOf(message)
                             val started = SystemClock.elapsedRealtime()
                             var deadline = started + MealBatch.graceMillis(batch)

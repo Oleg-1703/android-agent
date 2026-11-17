@@ -32,4 +32,22 @@ class PcHealthTest {
         assertTrue(health.limited)
         assertEquals("", health.reset)
     }
+    @Test fun oldServerCannotSilentlyExecutePhoneRequestOnEmulator() {
+        val selected = JSONObject(config.toString()).put("pc_consent", true).put("pc_execute_on_phone", true)
+        var requests = 0
+        val client = Http.client().newBuilder().addInterceptor { chain ->
+            requests++
+            assertEquals("/health", chain.request().url.encodedPath)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(ResponseBody.create(null, """{"status":"ready","provider":"claude-subscription"}""")).build()
+        }.build()
+        var writes = 0
+        val message = JSONObject().put("message_id", 1).put("text", "Breakfast fixture100g")
+        val token = "1:" + "x".repeat(24)
+        try {
+            PcBrain(selected, client).submit(listOf(message), TelegramApi(token, client)) { writes++; JSONObject() }
+            fail()
+        } catch (error: IllegalArgumentException) { assertTrue(error.message!!.contains("не поддерживает")) }
+        assertEquals(0, writes); assertEquals(1, requests)
+    }
 }

@@ -10,7 +10,7 @@ import java.time.LocalDate
 
 /** The pairing token authorizes this private PC, never a paid inference API. */
 class PcBrain(private val config: JSONObject, private val client: OkHttpClient, private val store: StateStore? = null) {
-    data class Health(val limited: Boolean, val reset: String)
+    data class Health(val limited: Boolean, val reset: String, val phone: Boolean = false)
     fun check(): Health {
         val endpoint = endpoint(config.optString("pc_url"))
         val token = config.optString("pc_pairing")
@@ -25,7 +25,9 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         }
         require(json.optString("status") == "ready" && json.optString("provider") == "claude-subscription") { "По этому адресу не найден помощник Android Agent." }
         val reset = json.optString("reset").takeIf { it.matches(Regex("(?:[01][0-9]|2[0-3]):[0-5][0-9]")) }.orEmpty()
-        return Health(json.optBoolean("subscription_limited"), reset)
+        val targets = json.optJSONArray("execution_targets")
+        val phone = targets != null && (0 until targets.length()).any { targets.optString(it) == "phone" }
+        return Health(json.optBoolean("subscription_limited"), reset, phone)
     }
     fun parse(text: String, photo: ByteArray? = null, voice: ByteArray? = null): JSONObject {
         require(config.optBoolean("pc_consent")) { "Включи ИИ по подписке на вкладке ИИ. Сообщение будет отправлено на твой ПК и в Claude." }
@@ -77,13 +79,13 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         return Meals.validate(response)
     }
     private fun jobRequest(path: String): Request.Builder {
-        require(config.optBoolean("pc_consent")) { "Подключи помощник ПК на вкладке ИИ. Запись выполняется в твоём FatSecret на эмуляторе." }
+        require(config.optBoolean("pc_consent")) { "Подключи помощник ПК на вкладке ИИ. Он распознаёт еду, запись выполняется на выбранном устройстве." }
         val token = config.optString("pc_pairing")
         require(token.matches(Regex("[A-Za-z0-9_-]{32,200}"))) { "Сохрани код сопряжения ПК на вкладке ИИ." }
         return Request.Builder().url(endpoint(config.optString("pc_url")).newBuilder().addPathSegments(path).build())
             .header("Authorization", "Bearer $token")
     }
-    fun submit(messages: List<JSONObject>, telegram: TelegramApi): String {
+    fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
         require(messages.size in 1..10)
         val payload = JSONObject().put("date", LocalDate.now().toString())
         val descriptions = messages.map { it.optString("text", it.optString("caption")) }.filter { it.isNotBlank() }
@@ -107,31 +109,56 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
             }
         }
         payload.put("images", photos)
+        val phone = config.optBoolean("pc_execute_on_phone")
+        if (phone) {
+            requireNotNull(executeOnPhone) { "Исполнитель на телефоне не готов." }
+            require(check().phone) { "Помощник ПК пока не поддерживает запись на телефоне. Обнови помощник; в эмулятор ничего не отправляю." }
+            payload.put("target", "phone")
+        }
         val identity = config.optString("bot_token") + ":" + config.optString("chat_id") + ":" + messages.joinToString(",") { it.getLong("message_id").toString() }
         val id = java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
         payload.put("request_id", id)
         val request = jobRequest("v1/log").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
         store?.put("pc_last_job", id)
         val response = JSONObject(Http.text(client, request, 16000))
-        if (response.optString("status") !in setOf("queued", "running")) return receipt(response)
+        fun finish(result: JSONObject): String {
+            if (phone && result.optString("status") in setOf("prepared", "complete", "executing")) {
+                require(result.optString("target") == "phone") { "ПК вернул результат другого исполнителя. Автоматически на эмулятор не переключаюсь." }
+            }
+            return if (result.optString("status") == "prepared" && phone) {
+                receipt(phoneRunner(phoneStage, requireNotNull(executeOnPhone)).run(id, result))
+            } else receipt(result)
+        }
+        if (response.optString("status") !in setOf("queued", "running")) return finish(response)
         for (attempt in 0 until 200) {
             Thread.sleep(3000)
             val status = JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))
-            if (status.optString("status") !in setOf("queued", "running")) return receipt(status)
+            if (status.optString("status") !in setOf("queued", "running")) return finish(status)
         }
         return "ПК ещё обрабатывает запрос. Не отправляй еду повторно. Результат: /status."
     }
     fun jobStatus(): String {
         val id = store?.get("pc_last_job").orEmpty()
         if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
-        return receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)))
+        phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return "Последний запрос:\n" + receipt(it) }
+        return "Последний запрос:\n" + receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)))
     }
+    private fun phoneRunner(stage: () -> String = { "" }, execute: (JSONObject) -> JSONObject) = PhoneMealRunner(requireNotNull(store), object : PhoneMealRunner.Remote {
+        private fun post(id: String, action: String, body: JSONObject): JSONObject = JSONObject(Http.text(client,
+            jobRequest("v1/jobs/$id/$action").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build(), 16000))
+        override fun claim(id: String) = post(id, "claim", JSONObject())
+        override fun report(id: String, result: JSONObject) {
+            if (post(id, "receipt", result).optString("status") != "accepted") throw java.io.IOException("ПК не подтвердил квитанцию телефона.")
+        }
+    }, stage, execute)
     private fun receipt(result: JSONObject): String {
         val savedBeforeFailure = result.objects("receipts").takeIf { it.isNotEmpty() }?.let { rows ->
             "До остановки уже сохранено и проверено:\n" + rows.joinToString("\n") { it.optString("preview") } + "\n\n"
         }.orEmpty()
         return when (result.optString("status")) {
             "queued", "running" -> "Запрос обрабатывается на ПК. Повторять еду не нужно."
+            "prepared" -> "ПК распознал еду. Запись на телефоне ещё не началась. Автоматически из /status её не запускаю."
+            "executing" -> "Запись выполняется на телефоне. Не отправляй еду повторно."
             "complete" -> "Еда сохранена и проверена в твоём FatSecret:\n" +
                 result.objects("receipts").joinToString("\n\n") { it.optString("preview") + if (it.optString("source") == "estimate") "\nКБЖУ и/или вес оценены по фото/описанию." else "" } +
                 result.optString("notes").takeIf { it.isNotBlank() }?.let { "\n\n$it" }.orEmpty() +

@@ -113,7 +113,7 @@
     <string name="fs_get_keys_help">Ключи выдаёт FatSecret после регистрации приложения. У Basic есть бесплатный доступ с ограничениями; поиск продуктов - по базе США. Вход в свой дневник выполняется отдельно ниже.</string>
     <string name="fs_intro">Обычный FatSecret, без developer-ключей и OAuth.</string>
     <string name="fs_screen_failed">Не удалось прочитать экран. Разблокируй телефон, включи специальные возможности Android Agent и проверь вход в FatSecret.</string>
-    <string name="pc_consent">Разрешаю передавать описание еды, фото и голос моему ПК, обрабатывать их Claude по подписке и автоматически записывать свою еду в мой FatSecret на эмуляторе с проверкой дневника</string>
+    <string name="pc_consent">Claude по подписке: разбирать еду, фото и голос, записывать автоматически</string>
     <string name="row_screen_ready">Специальные возможности включены. Войди в FatSecret и разблокируй экран.</string>
     <string name="row_screen_needed">Включи специальные возможности Android Agent. Developer-ключи не нужны.</string>
     <string name="row_pc_on">Настройки ПК сохранены. Проверь связь и оставь помощник включённым.</string>
@@ -154,8 +154,8 @@
     <string name="fs_disconnected">Локальные токены FatSecret удалены. При необходимости отзовите доступ в аккаунте FatSecret.</string>
 
     <!-- ai -->
-    <string name="ai_title">ИИ (по желанию)</string>
-    <string name="ai_intro">Подключи ПК адресом и кодом. Текст, фото этикетки или блюда и голос разберёт Claude по подписке. Своя еда будет записана в FatSecret на эмуляторе ПК. Держать FatSecret открытым на телефоне не нужно.</string>
+    <string name="ai_title">ИИ и способ записи</string>
+    <string name="ai_intro">Распознавание по подписке - на ПК. Запись - на выбранном устройстве.</string>
     <string name="ai_consent">Разрешаю отправлять текст, фото и голос из моего чата выбранному ИИ-провайдеру (может быть платно)</string>
     <string name="ai_url">Адрес API (OpenAI-совместимый, только HTTPS)</string>
     <string name="ai_key">Ключ API</string>

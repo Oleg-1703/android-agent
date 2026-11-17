@@ -99,16 +99,21 @@ class AgentCommands(
         val screen = requireNotNull(ui)
         val brain = PcBrain(config, client, store)
         val batch = if (message.has("agent_batch")) message.objects("agent_batch") else listOf(message)
-        if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try { CommandReply(brain.submit(batch, telegram)) }
+        if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try {
+            if (config.optBoolean("pc_execute_on_phone")) screen.requireReady()
+            CommandReply(brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }) { plan -> CustomMealEngine(store, screen).log(plan) })
+        }
             catch (_: java.io.IOException) { CommandReply("Не получил результат ПК. Запрос мог сохраниться на ПК. Не отправляй ту же еду повторно; проверь /status.") }
         if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply(brain.jobStatus())
         val meals = UiMealEngine(store, screen)
         return when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
-                "Записываю свою еду в твой FatSecret на эмуляторе ПК. Claude работает по твоей подписке, платного API нет.\n\n" +
+                "Записываю свою еду в твой FatSecret " + (if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "на эмуляторе ПК") + ". Claude работает по твоей подписке на ПК, платного API нет.\n\n" +
                     "1. Текст/голос с названием, весом и точными КБЖУ.\n2. Фото этикетки + голос, сколько съел.\n3. Фото блюда, с пояснением или без: КБЖУ будут оценены и помечены.\n4. Фото/цифры штрихкода + порция: проверю интернет-источник; если полного КБЖУ нет, не запишу.\n\n" +
                     "Можно без /meal. Фото и голос объединяются в один запрос. Выбирать продукты из каталога и подтверждать каждую цифру не нужно.\n" +
-                    "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\nПК и эмулятор должны работать; открывать FatSecret на телефоне не нужно."
+                    "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\n" +
+                    (if (config.optBoolean("pc_execute_on_phone")) "ПК должен работать. Телефон должен быть разблокирован, управление Android Agent включено. FatSecret открою сам, подтверждать цифры не нужно."
+                    else "ПК и эмулятор должны работать; открывать FatSecret на телефоне не нужно. Второй способ - запись на этом телефоне, включается на вкладке ИИ.")
             )
             command == "/status" || natural == "статус" -> CommandReply(
                 "Telegram на связи. FatSecret: управление экраном. " +

@@ -241,6 +241,8 @@ class BrainServer(ThreadingHTTPServer):
             plan["_execution_id"] = payload["_execution_id"]
         if plan["date"] != payload["date"]:
             raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
+        if payload.get('target') == 'phone':
+            return {'status': 'prepared', 'target': 'phone', 'plan': plan}
         result = Emulator(self.cwd.parent.parent).log(plan)
         result["notes"] = str(plan.get("notes", ""))[:600]
         result["sources"] = [item.get("source_url", "") for item in plan["items"] if item.get("source_url")]
@@ -279,6 +281,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             self.respond(401, {"error": "unauthorized"})
             return
+        phone_receipt = re.fullmatch(r'/v1/jobs/([a-f0-9]{32,64})/(claim|receipt)', self.path)
+        if phone_receipt:
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 1 <= length <= 16000 or self.headers.get('Transfer-Encoding'):
+                    raise ValueError()
+                body = json.loads(self.rfile.read(length))
+                key, action = phone_receipt.groups()
+                result = self.server.jobs.claim_phone(key) if action == 'claim' else self.server.jobs.finish_phone(key, body)
+                self.respond(200, result)
+            except (ValueError, TypeError, KeyError):
+                self.respond(409, {'error': 'phone_job_conflict'})
+            return
         if self.path == "/v1/log":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -288,6 +303,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body.get("text"), str) or not 1 <= len(body["text"]) <= 4000:
                     raise ValueError()
                 dt.date.fromisoformat(body["date"])
+                if body.get('target', 'emulator') not in {'phone', 'emulator'}:
+                    raise ValueError()
                 images = body.get("images", [])
                 if not isinstance(images, list) or len(images) > 4:
                     raise ValueError()
@@ -385,6 +402,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200 if result is not None else 404, result or {"error": "not_found"})
         elif self.path == "/health":
             self.respond(200, {"status": "ready", "provider": "claude-subscription",
+                               "execution_targets": ["emulator", "phone"],
                                "subscription_limited": time.monotonic() < self.server.limit_until,
                                "reset": self.server.reset_hint})
         else:

@@ -68,6 +68,7 @@ switch ($Action) {
         }
         Phase 'ui'
         Phase 'pc-contract'
+        Phase 'phone-mode-settings'
         $evidence = Join-Path $repo '.local/qa'
         New-Item -ItemType Directory -Force $evidence | Out-Null
         'home', 'telegram', 'fatsecret', 'ai', 'help', 'diagnostics' | ForEach-Object { ExportScreenshot $_ $evidence }

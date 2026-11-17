@@ -23,6 +23,9 @@ printf '%s\n' "$result"
 result=$("$adb" shell am instrument -r -w -e phase pc-contract "$runner")
 printf '%s\n' "$result"
 [[ "$result" == *'INSTRUMENTATION_CODE: -1'* && "$result" == *'PASS:'* ]]
+result=$("$adb" shell am instrument -r -w -e phase phone-mode-settings "$runner")
+printf '%s\n' "$result"
+[[ "$result" == *'INSTRUMENTATION_CODE: -1'* && "$result" == *'PASS:'* ]]
 mkdir -p .local/qa
 for name in home telegram fatsecret ai help diagnostics; do
     "$adb" exec-out run-as com.oleg.androidagent cat "cache/$name.png" > ".local/qa/$name.png"

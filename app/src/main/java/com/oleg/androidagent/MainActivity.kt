@@ -108,6 +108,7 @@ class MainActivity : Activity() {
     private lateinit var pcUrl: Ui.Field
     private lateinit var pcPairing: Ui.Field
     private lateinit var pcConsent: CheckBox
+    private lateinit var pcExecuteOnPhone: CheckBox
     // help
     private lateinit var helpResult: TextView
 
@@ -621,7 +622,7 @@ class MainActivity : Activity() {
         val page = column()
         pageTitle(page, R.string.ai_title, R.string.ai_intro)
         val pc = card()
-        pc.add(heading("Подключение ПК"))
+        pc.add(heading("Способ записи"))
         pcUrl = field("HTTPS-адрес ПК")
         pcUrl.edit.setText(config?.optString("pc_url").orEmpty())
         pcPairing = field("Код сопряжения с ПК", secret = true)
@@ -631,8 +632,13 @@ class MainActivity : Activity() {
             isChecked = config?.optBoolean("pc_consent") ?: false
             setTextColor(color(R.color.navy)); minHeight = dp(48)
         }
-        pc.add(pcUrl.box, 12); pc.add(pcPairing.box, 12); pc.add(pcConsent, 12)
-        pc.add(body("Помощник на ПК использует вход в Claude Code. ПК должен быть включён, лимиты подписки сохраняются. Запись в FatSecret - только после подтверждения."), 12)
+        pcExecuteOnPhone = CheckBox(this@MainActivity).apply {
+            text = "Записывать в FatSecret на этом телефоне"
+            isChecked = config?.optBoolean("pc_execute_on_phone") ?: false
+            setTextColor(color(R.color.navy)); minHeight = dp(48)
+        }
+        pc.add(pcExecuteOnPhone, 12); pc.add(pcUrl.box, 12); pc.add(pcPairing.box, 12); pc.add(pcConsent, 12)
+        pc.add(body("ИИ работает на ПК. Для записи на телефоне один раз включи управление Android Agent и оставь экран разблокированным. Подтверждать каждый приём пищи не нужно."), 12)
         val pcResult = resultView()
         pc.add(button("Сохранить подключение ПК") {
             try {
@@ -644,6 +650,7 @@ class MainActivity : Activity() {
                     require(token.matches(Regex("[A-Za-z0-9_-]{32,200}"))) { "Введи код сопряжения из помощника на ПК." }
                 }
                 current.put("pc_url", url).put("pc_pairing", token).put("pc_consent", pcConsent.isChecked)
+                    .put("pc_execute_on_phone", pcExecuteOnPhone.isChecked)
                 stopService(Intent(this@MainActivity, AgentService::class.java))
                 store.put("config", current.toString())
                 pcPairing.edit.setText("")
@@ -656,16 +663,22 @@ class MainActivity : Activity() {
             }
         }, 12)
         pc.add(pcResult, 8)
+        pc.add(button("Открыть настройки управления телефоном", Ui.Style.SECONDARY) {
+            launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }, 12)
         pc.add(button("Проверить связь с ПК", Ui.Style.SECONDARY) {
             if (busy) show(pcResult, Ui.Tone.WARN, getString(R.string.wait_busy))
             else {
                 val candidate = try { store.config() } catch (_: Exception) { JSONObject() }
                 candidate.put("pc_url", pcUrl.edit.text.toString().trim())
                 candidate.put("pc_pairing", pcPairing.edit.text.toString().trim().ifBlank { candidate.optString("pc_pairing") })
+                candidate.put("pc_execute_on_phone", pcExecuteOnPhone.isChecked)
                 background(pcResult, R.string.pc_check_failed) {
                     try {
                         val health = PcBrain(candidate, client).check()
-                        if (health.limited) Outcome(Ui.Tone.WARN, "ПК на связи. Достигнут лимит подписки." +
+                        if (candidate.optBoolean("pc_execute_on_phone") && !health.phone) Outcome(Ui.Tone.ERR, "Обнови помощник ПК: этот сервер ещё не поддерживает запись на телефоне.")
+                        else if (candidate.optBoolean("pc_execute_on_phone") && FatAccessibilityService.instance == null) Outcome(Ui.Tone.WARN, "ПК на связи. Один раз включи Android Agent в настройках управления телефоном, затем запусти агента.")
+                        else if (health.limited) Outcome(Ui.Tone.WARN, "ПК на связи. Достигнут лимит подписки." +
                             (if (health.reset.isNotBlank()) " Сброс в ${health.reset} по времени ПК." else ""))
                         else Outcome(Ui.Tone.OK, "ПК на связи. Для разбора еды используется текущая подписка, API-ключ не нужен.")
                     } catch (e: IllegalArgumentException) {
