@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 
 /** A fixed recipe for the observed FatSecret 11 UI. The model never supplies actions. */
 class FatUi(private val context: Context, private val beforeCustomCommit: () -> Unit = {}) : MealScreen, CustomMealScreen {
+    private class FrameRangeMismatch : IllegalArgumentException("FatSecret не сообщил полные границы списка. Результат требует ручной проверки.")
     private var screenLease: ScreenLease? = null
     fun canExecute() = FatAccessibilityService.instance != null &&
         context.getSystemService(android.os.PowerManager::class.java).isInteractive &&
@@ -164,8 +165,14 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     private data class Frame(val from: Int, val count: Int, val rows: List<DiaryRow?>)
     private fun frame(): Frame {
         var failure: IllegalArgumentException? = null
-        repeat(8) {
-            try { return readFrame() } catch (error: IllegalArgumentException) { failure = error }
+        repeat(8) { attempt ->
+            try { return readFrame() } catch (error: IllegalArgumentException) {
+                failure = error
+                // A cold-start layout can change after the last scroll event. Refresh once, without relaxing coverage.
+                if (error is FrameRangeMismatch && attempt == 3) {
+                    if (indexedScroll(true)) indexedScroll(false) else if (indexedScroll(false)) indexedScroll(true)
+                }
+            }
             SystemClock.sleep(150)
         }
         throw requireNotNull(failure)
@@ -175,11 +182,9 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         val list = nodes("food_journal_new_body").single()
         val position = requireNotNull(FatAccessibilityService.instance?.lastScroll)
         diaryRangeState = "range=${position.from}..${position.to}/${position.count} children=${list.childCount} sameRoot=${position.rootHash == list.hashCode()} sameWindow=${position.window == list.windowId}"
-        require(position.rootHash == list.hashCode() && position.window == list.windowId &&
+        if (!(position.rootHash == list.hashCode() && position.window == list.windowId &&
             position.from >= 0 && position.to >= position.from && position.count in 1..300 &&
-            position.to < position.count && list.childCount == position.to - position.from + 1) {
-            "FatSecret не сообщил полные границы списка. Результат требует ручной проверки."
-        }
+            position.to < position.count && list.childCount == position.to - position.from + 1)) throw FrameRangeMismatch()
         fun field(node: AccessibilityNodeInfo, id: String): String = node.findAccessibilityNodeInfosByViewId(prefix + id)
             .singleOrNull()?.text?.toString()?.trim().orEmpty()
         val rows = (0 until list.childCount).map { index ->
@@ -462,15 +467,11 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 if (row?.isVisibleToUser == true) { click(row); return@main true }
                 if (row != null) row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                 else {
-                    val scrolls = mutableListOf<AccessibilityNodeInfo>()
-                    var visited = 0
-                    fun walk(node: AccessibilityNodeInfo, depth: Int) {
-                        require(depth <= 20 && visited++ < 600)
-                        if (node.isVisibleToUser && node.isScrollable && node.className?.toString()?.endsWith("ScrollView") == true &&
-                            node.findAccessibilityNodeInfosByViewId(prefix + "custom_entry_product_info_row_title").isNotEmpty()) scrolls += node
-                        for (i in 0 until node.childCount) node.getChild(i)?.let { walk(it, depth + 1) }
+                    // Localized labels wrap onto more lines; the regional form is a ListView.
+                    val scrolls = root().findAccessibilityNodeInfosByViewId("android:id/list").filter {
+                        it.isVisibleToUser && it.className?.toString() == "android.widget.ListView" &&
+                            it.findAccessibilityNodeInfosByViewId(prefix + "custom_entry_product_info_row_title").isNotEmpty()
                     }
-                    walk(root(), 0)
                     require(scrolls.size == 1) { "Поле своей еды не найдено. Запись остановлена." }
                     scrolls.single().performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                 }
@@ -567,7 +568,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         customRow(setOf("brand", "бренд", "торговая марка", "марка"))
         waitFor { nodes("titled_list_item_title").isNotEmpty() }
         main {
-            val row = nodes("titled_list_item_title").filter { it.text?.toString()?.lowercase() in setOf("my custom food entry", "моя собственная еда", "мой продукт", "мой собственный продукт") }
+            val row = nodes("titled_list_item_title").filter { it.text?.toString()?.lowercase() in setOf("my custom food entry", "ввод моей собственной еды", "моя собственная еда", "мой продукт", "мой собственный продукт") }
             require(row.size == 1) { "Не найден режим своей еды." }; click(row.single())
         }
         waitFor { nodes("custom_entry_adv_brand_input_field").size == 1 }
@@ -616,24 +617,27 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     override fun finishPreparedCustom(item: org.json.JSONObject): String {
         require(main { nodes("custom_entry_advanced_ok").size == 1 && text("custom_entry_product_info_row_value").contains(item.getString("query")) && text("custom_entry_product_info_row_value").contains("Моя еда") })
         searchState = "custom_tag"
-        customRow(setOf("add/edit tags", "добавить/изменить теги", "добавить/изменить метки", "теги", "метки"))
+        customRow(setOf("add/edit tags", "добавить/редактировать категории", "добавить/изменить теги", "добавить/изменить метки", "теги", "метки"))
         waitFor { nodes("custom_entry_adv_tag_input_field").isNotEmpty() || nodes("checkbox_list_item_row_title").isNotEmpty() }
         if (main { nodes("custom_entry_adv_tag_input_field").isNotEmpty() }) {
-            setText("custom_entry_adv_tag_input_field", "Meal")
+            setText("custom_entry_adv_tag_input_field", item.getString("query"))
             waitFor { nodes("custom_entry_adv_tag_save").size == 1 }
             clickId("custom_entry_adv_tag_save")
             waitFor { nodes("checkbox_list_item_row_title").isNotEmpty() }
         }
         main {
-            val title = nodes("checkbox_list_item_row_title").filter { it.text?.toString() == "Meal" }
-            require(title.size == 1) { "Тег своей еды не найден." }
+            val categories = nodes("checkbox_list_item_row_title").filter { !it.text.isNullOrBlank() }
+            // Categories are required metadata, not catalog foods or a source of nutrition.
+            val title = categories.firstOrNull { it.text.toString().equals(item.getString("query"), ignoreCase = true) }
+                ?: categories.firstOrNull()
+            requireNotNull(title) { "FatSecret не предложил категорию для своей еды." }
             val checks = mutableListOf<AccessibilityNodeInfo>()
             fun walk(node: AccessibilityNodeInfo, depth: Int) {
                 if (depth > 5) return
                 if (node.viewIdResourceName == prefix + "checkbox_list_item_row_checkbox") checks += node
                 for (i in 0 until node.childCount) node.getChild(i)?.let { walk(it, depth + 1) }
             }
-            walk(requireNotNull(title.single().parent), 0)
+            walk(requireNotNull(title.parent), 0)
             require(checks.size == 1)
             if (!checks.single().isChecked) click(checks.single())
         }
@@ -667,7 +671,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                     root().findAccessibilityNodeInfosByViewId("android:id/text1").any { it.text?.toString()?.replace(" ", "") in setOf("100g", "100г") }
                 require(visibleNodes("save_food_preview_btn").isNotEmpty() || nodes("title_of_food_edit").isNotEmpty() ||
                     servingSize || nodes("custom_entry_adv_tag_input_field").isNotEmpty() || nodes("checkbox_list_item_row_title").isNotEmpty() ||
-                    text("actionbar_subtitle").singleOrNull()?.lowercase() in setOf("preview", "предпросмотр", "предварительный просмотр", "add new food", "добавить новый продукт"))
+                    text("actionbar_subtitle").singleOrNull()?.lowercase() in setOf("preview", "предпросмотр", "предварительный просмотр", "add new food", "добавить новый продукт", "добавить новую еду"))
                 requireNotNull(FatAccessibilityService.instance).performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 false
             }

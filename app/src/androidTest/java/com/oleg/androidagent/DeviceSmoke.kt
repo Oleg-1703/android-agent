@@ -127,7 +127,7 @@ class DeviceSmoke : Instrumentation() {
     override fun onStart() {
         val result = Bundle()
         try {
-            val automation = getUiAutomation(if (phase in setOf("diary-summary-metadata", "diary-expand-first", "diary-detail-setup", "diary-list-restore", "diary-scan-repro", "diary-collapsed-regression", "screen-lease", "phone-deferred-dry-run", "phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
+            val automation = getUiAutomation(if (phase in setOf("portion-dry-run", "diary-summary-metadata", "diary-expand-first", "diary-detail-setup", "diary-list-restore", "diary-scan-repro", "diary-collapsed-regression", "screen-lease", "phone-deferred-dry-run", "phone-direct-dry-run", "custom-cancel-dry-run", "diary-sections", "existing-preview", "owner-search", "custom-dry-run", "custom-reconcile", "custom-finish-owned-form", "custom-prewrite-cleanup", "custom-meal", "ui-live-read", "ui-live-ru-read", "ui-command-contract", "ui-metadata", "ui-search-submit", "pc-live-draft", "pc-live-photo", "pc-live-voice", "ui-reviewed-write", "ui-reviewed-ack")) android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES else 0)
             val qemu = automation.executeShellCommand("getprop ro.kernel.qemu").use { descriptor ->
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().readText().trim()
             }
@@ -312,6 +312,15 @@ class DeviceSmoke : Instrumentation() {
                             JSONObject().put("counter", org.json.JSONArray(values)).put("table_visible", row.findAccessibilityNodeInfosByViewId(prefix + "food_journal_header_row_nutrients").any { it.isVisibleToUser })
                         }
                         File(targetContext.filesDir, "diary-summary-metadata.json").writeText(org.json.JSONArray(rows).toString())
+                          val list = root.findAccessibilityNodeInfosByViewId(prefix + "food_journal_new_body").single()
+                          val children = (0 until list.childCount).map { index ->
+                              val child = requireNotNull(list.getChild(index))
+                              JSONObject().put("index", index).put("id", child.viewIdResourceName)
+                                  .put("visible", child.isVisibleToUser).put("row", child.collectionItemInfo?.rowIndex)
+                          }
+                          File(targetContext.filesDir, "diary-range-metadata.json").writeText(JSONObject()
+                              .put("range", FatAccessibilityService.instance?.lastScroll.toString())
+                              .put("children", org.json.JSONArray(children)).toString())
                     }
                     result.putString("stream", "PASS: local-only summary metadata saved; no meal actions\n")
                 }
@@ -404,7 +413,7 @@ class DeviceSmoke : Instrumentation() {
                     File(targetContext.filesDir, "diary-sections.json").writeText(snapshots.toString())
                     result.putString("stream", "PASS: all four complete diary sections, including empty last meal and nonempty meal; read-only\n")
                 }
-                "existing-preview" -> {
+                "portion-dry-run", "existing-preview" -> {
                     check(!AgentService.workerActive && store.get("write_intent").isBlank())
                     waitUntil("Accessibility not connected") { FatAccessibilityService.instance != null }
                     val input = File(targetContext.filesDir, "custom-request.json")
@@ -414,7 +423,11 @@ class DeviceSmoke : Instrumentation() {
                     val meal = request.getString("meal")
                     val before = screen.snapshot(meal)
                     try {
-                        val preview = screen.prepareExisting(meal, request.getJSONArray("items").getJSONObject(0)) {}
+                        val item = request.getJSONArray("items").getJSONObject(0)
+                        val preview = if (phase == "portion-dry-run") {
+                            val candidates = screen.existingCandidates(meal, item.getString("query"))
+                            screen.choose(0, candidates, item.getString("grams"))
+                        } else screen.prepareExisting(meal, item) {}
                         File(targetContext.filesDir, "existing-preview.json").writeText(JSONObject().put("preview", preview).toString())
                     } finally { screen.cancelExistingDraft() }
                     check(screen.snapshot(meal) == before)
@@ -427,7 +440,20 @@ class DeviceSmoke : Instrumentation() {
                     val request = JSONObject(input.readText())
                     input.delete()
                     val screen = FatUi(targetContext, beforeCustomCommit = { throw PreviewComplete() })
+                    inspectedUi = screen
                     var snapshotFailure: IllegalArgumentException? = null
+                    val recording = object : CustomMealScreen by screen {
+                        override fun cancelCustomDraft() {
+                            var labels = ""
+                            testMain {
+                                labels = requireNotNull(FatAccessibilityService.instance).rootInActiveWindow
+                                    .findAccessibilityNodeInfosByViewId("com.fatsecret.android:id/checkbox_list_item_row_title")
+                                    .joinToString("\n") { it.text.toString() }
+                            }
+                            File(targetContext.cacheDir, "custom-dry-categories.txt").writeText(labels)
+                            screen.cancelCustomDraft()
+                        }
+                    }
                     fun readBefore(): DiarySnapshot? = try { screen.snapshot(request.getString("meal")) }
                         catch (error: IllegalArgumentException) { snapshotFailure = error; null }
                     var before = readBefore()
@@ -439,7 +465,7 @@ class DeviceSmoke : Instrumentation() {
                     }
                     if (before == null) throw requireNotNull(snapshotFailure)
                     check(before?.complete == true)
-                    try { CustomMealEngine(store, screen).log(request); error("Save was not intercepted") }
+                    try { CustomMealEngine(store, recording).log(request); error("Save was not intercepted") }
                     catch (_: PreviewComplete) {}
                     check(store.get("write_intent").isBlank())
                     check(screen.snapshot(request.getString("meal")) == before)

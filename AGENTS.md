@@ -13,6 +13,8 @@ An explicit owner request to find an ALREADY EXISTING food is a separate support
 `app/` is the Android application; `docs/` holds research, decisions, installation and progress; `.github/workflows/` builds/tests and uploads debug APKs. Use Kotlin, supported Android APIs, a user-started foreground service, Telegram Bot API, HTTPS and Android Keystore. LLM output is untrusted structured input, never executable instructions. Accessibility is the primary package-restricted, bounded execution path. Inspect and test the real application UI before implementing its workflow. The existing FatSecret developer API implementation is an optional legacy experiment, not the requested solution; do not require its setup for the primary goal or claim UI execution already exists.
 
 # Engineering rules
+Locale acceptance must change FatSecret's own App Language setting and cold-start the app; changing Android's locale alone does not validate FatSecret translations. Test the full custom-food draft with the actual Russian labels, including the own-food brand picker and categories after nutrition preview. The regional custom form uses the anchored android:id/list ListView; long localized summaries can push required categories below the viewport. Never assume ScrollView or that all form rows are initially visible.
+
 Read README, docs/UPSTREAM.md, docs/PROGRESS.md and relevant source before changes. Reuse established components after auditing licenses and Android 11 support. Do not duplicate components, add unnecessary dependencies or silently substitute stubs. Separate transport, state, parsing and execution. Handle errors explicitly. Test critical authorization, parsing, signing and retry safety. Keep API 30 compatibility.
 
 # Security

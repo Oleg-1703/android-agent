@@ -8,6 +8,7 @@ class DiarySectionProofTest {
         assertNull(DiarySectionProof.count(""))
         assertEquals(3, DiarySectionProof.count("3 items"))
         assertEquals(3, DiarySectionProof.count("3\u00a0продукта"))
+        assertEquals(3, DiarySectionProof.count("3\u00a0шт"))
         assertNull(DiarySectionProof.count("Carbs: 12.5g, Prot: 7.25g, Target: 10%"))
         assertNull(DiarySectionProof.count("Углеводы: 12,5г, Белки: 7,25г, Цель: 10%"))
         try { DiarySectionProof.count("unrecognised visible counter"); fail() }

@@ -159,7 +159,9 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
     fun jobStatus(): String {
         val id = store?.get("pc_last_job").orEmpty()
         if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
-        if (plans().contains(id)) return "Еда распознана и ждёт разблокировки телефона в очереди. Повторно отправлять не нужно."
+        if (plans().contains(id)) return if (requireNotNull(store).get("write_intent").isNotBlank())
+            "Новая еда распознана и ждёт в очереди. Выполнение блокирует предыдущая непроверенная попытка, а не экран телефона. Проверь дневник и сними блокировку в Android Agent. Повторно отправлять еду не нужно."
+        else "Еда распознана и ждёт готовности телефона: включённого экрана, снятой блокировки и подключённой службы управления Android Agent. Повторно отправлять не нужно."
         phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return "Последний запрос:\n" + receipt(it) }
         return "Последний запрос:\n" + receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)))
     }

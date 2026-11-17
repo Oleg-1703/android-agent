@@ -4,7 +4,7 @@ package com.oleg.androidagent
 object DiarySectionProof {
     fun count(title: String): Int? {
         if (title.isBlank()) return null
-        val counter = Regex("^([0-9]+)[\\s\\p{Zs}]+(?:items?|продукт[а-я]*)\\b", RegexOption.IGNORE_CASE).find(title)
+        val counter = Regex("^([0-9]+)[\\s\\p{Zs}]+(?:items?|шт|продукт[а-я]*)\\b", RegexOption.IGNORE_CASE).find(title)
         if (counter != null) return counter.groupValues[1].toIntOrNull()
             ?: throw DiaryReadFailure("Неизвестный формат счётчика продуктов FatSecret.")
         // The same nutrition-info field can contain a labelled nutrient summary instead of a count.
