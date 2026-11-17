@@ -96,3 +96,12 @@ class CustomTransportTests(unittest.TestCase):
         self.request('POST', '/v1/log', body)
         body['text'] = 'different meal'
         self.assertEqual(self.request('POST', '/v1/log', body)[0], 400)
+
+    @patch.object(brain, 'Emulator')
+    @patch.object(brain, 'parse_meal')
+    def test_emulator_receipt_preserves_whole_meal_composition(self, parse, emulator):
+        parse.return_value = {'date': '2026-11-17', 'meal': 'lunch', 'question': '', 'notes': 'Estimate', 'items': [
+            {'query': 'Fixture', 'grams': '100', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}
+        emulator.return_value.log.return_value = {'status': 'complete', 'notes': 'Estimate\nComposition: rice, fish'}
+        result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17'})
+        self.assertEqual(result['notes'], 'Estimate\nComposition: rice, fish')

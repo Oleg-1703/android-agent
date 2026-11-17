@@ -46,6 +46,14 @@ class PhoneMealRunnerTest {
         assertEquals("complete", runner().run(id, prepared()).getString("status"))
         assertEquals(1, writes); assertEquals(1, claims); assertEquals(1, reports)
     }
+    @Test fun wholeMealCompositionSurvivesReceiptCachingAndReporting() {
+        val runner = PhoneMealRunner(store, remote) { saved().put("notes", "Estimate\nComposition: rice, fish") }
+        val request = prepared().also { it.getJSONObject("plan").put("notes", "Estimate") }
+        assertEquals("Estimate\nComposition: rice, fish", runner.run(id, request).getString("notes"))
+        assertEquals("Estimate\nComposition: rice, fish", runner.status(id)!!.getString("notes"))
+        assertEquals(1, claims)
+        assertEquals(1, reports)
+    }
     @Test fun lostClaimNeverStartsPhoneOrRepeatsClaim() {
         lostClaim = true
         assertEquals("uncertain", runner().run(id, prepared()).getString("status"))

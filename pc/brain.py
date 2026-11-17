@@ -248,7 +248,8 @@ class BrainServer(ThreadingHTTPServer):
         if payload.get('target') == 'phone':
             return {'status': 'prepared', 'target': 'phone', 'plan': plan}
         result = Emulator(self.cwd.parent.parent).log(plan)
-        result["notes"] = str(plan.get("notes", ""))[:600]
+        if not result.get("notes"):
+            result["notes"] = str(plan.get("notes", ""))[:600]
         result["sources"] = [item.get("source_url", "") for item in plan["items"] if item.get("source_url")]
         return result
 
