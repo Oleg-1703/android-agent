@@ -103,5 +103,5 @@ class CustomTransportTests(unittest.TestCase):
         parse.return_value = {'date': '2026-11-17', 'meal': 'lunch', 'question': '', 'notes': 'Estimate', 'items': [
             {'query': 'Fixture', 'grams': '100', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}
         emulator.return_value.log.return_value = {'status': 'complete', 'notes': 'Estimate\nComposition: rice, fish'}
-        result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17'})
+        result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17', '_execution_id': 'a' * 32})
         self.assertEqual(result['notes'], 'Estimate\nComposition: rice, fish')

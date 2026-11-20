@@ -29,11 +29,22 @@ def validate_plan(plan):
         if not isinstance(item.get("query"), str) or not 2 <= len(item["query"].strip()) <= 150:
             raise ValueError("Не определено название еды. Ничего не записано.")
         try:
-            grams = Decimal(item["grams"])
-            if item.get("source") == "existing":
-                if not grams.is_finite() or not 0 < grams <= 5000 or item.get("barcode") or item.get("nutrition"):
+            queries = item.get('search_queries', [])
+            if not isinstance(queries, list) or len(queries) > 5 or any(not isinstance(q, str) or not 2 <= len(q) <= 150 for q in queries):
+                raise ValueError()
+            if item.get("source") in {"existing", "saved"}:
+                if item.get("barcode") or item.get("nutrition"):
                     raise ValueError()
+                if item.get('grams'):
+                    grams = Decimal(item['grams'])
+                    if not grams.is_finite() or not 0 < grams <= 5000:
+                        raise ValueError()
+                else:
+                    count = Decimal(item.get('count', '1'))
+                    if not count.is_finite() or not 0 < count <= 100 or item.get('unit', 'servings') not in {'pieces', 'servings'}:
+                        raise ValueError()
                 continue
+            grams = Decimal(item["grams"])
             n = item["nutrition"]
             values = {key: Decimal(n[key]) for key in ("basis_grams", "calories", "protein", "fat", "carbs")}
             if not grams.is_finite() or not 0 < grams <= 5000 or not 0 < values["basis_grams"] <= 5000:
@@ -109,6 +120,7 @@ class MealJobs:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="custom-meal")
         with self.connection() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, created REAL NOT NULL, text TEXT NOT NULL, plan TEXT)")
             db.execute("UPDATE jobs SET state='uncertain', result=? WHERE state IN ('queued','running')",
                        (json.dumps({"message": "ПК перезапустился во время обработки. Проверь дневник; автоматического повтора не будет."}),))
             for key, raw in db.execute("SELECT id,result FROM jobs WHERE state='executing'").fetchall():
@@ -131,9 +143,30 @@ class MealJobs:
         if row is None:
             return None
         result = {**json.loads(row[1]), "status": row[0]}
-        if row[0] == "failed":
+        if row[0] == "failed" and not result.get("reply"):
             result["message"] = "Последний запрос завершился ошибкой.\n" + result.get("message", "Запись не выполнена.")
         return result
+
+    def remember(self, key, text, plan=None):
+        with self.connection() as db:
+            db.execute("INSERT OR REPLACE INTO memory VALUES (?,?,?,?)", (key, time.time(), text, json.dumps(plan, ensure_ascii=False) if plan else None))
+
+    def forget(self, key):
+        with self.connection() as db:
+            db.execute("DELETE FROM memory WHERE id=?", (key,))
+
+    def recent(self, exclude, limit=5, max_age=86400):
+        """Newest-first earlier requests with their state; retry is allowed only for a failed job that saved nothing."""
+        with self.connection() as db:
+            rows = db.execute("SELECT m.id,m.created,m.text,m.plan,j.state,j.result FROM memory m JOIN jobs j ON j.id=m.id "
+                              "WHERE m.id!=? AND m.created>? ORDER BY m.created DESC LIMIT ?", (exclude, time.time() - max_age, limit)).fetchall()
+        out = []
+        for key, created, text, plan, state, raw in rows:
+            result = json.loads(raw)
+            out.append({"key": key, "minutes_ago": int((time.time() - created) / 60), "state": state, "text": text,
+                        "plan": json.loads(plan) if plan else None, "message": str(result.get("message", ""))[:300],
+                        "can_retry": bool(plan) and state == "failed" and not result.get("reply") and not result.get("receipts")})
+        return out
 
     def claim_phone(self, key):
         with self.lock, self.connection() as db:
