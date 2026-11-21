@@ -1,5 +1,23 @@
 # Architecture decisions
 
+## 16.11.2026: проверка сохранения по экрану
+
+Основной сценарий реализован через Accessibility; абзацы ниже о нереализованном исполнителе относятся к началу работы. ИИ использует tool-less Claude Code по подписке на ПК. Ключи платного API и developer-вход FatSecret не нужны.
+
+Сохранение имеет две отдельные кнопки, поэтому перед обеими проверяются выбранный продукт, граммы, дата и приём пищи. Журнал фиксируется до первого нажатия; повтор не выполняется. Для проверки результата собираются все позиции RecyclerView по TYPE_VIEW_SCROLLED fromIndex/toIndex/itemCount. CollectionInfo самой версии FatSecret не сообщает индексы. Только полный список и точная разность мультимножеств до/после позволяют снять блокировку. Неполное чтение, неизвестный формат, лишняя строка или изменение существующей строки оставляют ручную проверку. Это подтверждение наблюдаемого результата, а не автоматическое признание неопределённой записи успешной.
+
+Поиск использует подсказку FatSecret, а при её отсутствии - видимую клавишу «Поиск» текущей системной клавиатуры. Нажатие настоящей клавиши проверено вручную после перезапуска: появились видимые варианты продуктов. Эксперимент с ACTION_IME_ENTER не подтвердил поиск: сырые узлы включали скрытые элементы. По [документации Android](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo.AccessibilityAction#ACTION_IME_ENTER), это действие передаёт EditorInfo.actionId (в наблюдаемом поле 0), а не imeOptions IME_ACTION_SEARCH (3).
+
+Дополнительное окно ограничено TYPE_INPUT_METHOD выбранной DEFAULT_INPUT_METHOD. Исполнитель находит только одну видимую, доступную клавишу «Поиск» в нижней половине клавиатуры; сверяет пакет окна и узла, активный FatSecret, запрос и контекст. Другие клавиши не нажимаются. Жесты и координаты не используются, canPerformGestures не добавлен. Содержимое клавиатуры и подсказки в модель не отправляются.
+
+## 15.11.2026: уточнение цели - управление установленным приложением
+
+Олег прямо уточнил: нужен агент для управления уже установленным FatSecret через Android Accessibility. Developer-доступ не является требованием этого сценария. Старое решение «API first» ниже сохраняется как история эксперимента, но больше не определяет основную задачу. Управление экраном ещё не реализовано; не выдавать API-режим и исправленный Telegram за готового исполнителя действий в приложении.
+
+## 15.11.2026: время команд Telegram
+
+Телефонные часы нельзя использовать как источник свежести входящих команд. Сравнение `System.currentTimeMillis()/1000 - message.date` и строгая нижняя граница 0 отвергали свежие запросы даже при небольшом отставании часов. В 0.3.1 время берётся из Date заголовка HTTPS-ответа Telegram и продолжается через Android elapsedRealtime. Образец живёт не больше двух минут; без надёжного времени команды с действиями не исполняются. Порог старых команд 300 секунд сохранён, небольшой будущий сдвиг до 30 секунд допускает округление/погрешность передачи. Команды помощи, состояния, отмены и остановки доступны при любом времени, после прежней проверки владельца. Offset и блокировка неопределённых записей не менялись.
+
 ## 2026-11-12: preserve the small native app
 Audit in UPSTREAM.md found large complete agents, not a drop-in existing FatSecret diary module. Keep Kotlin/API 30 and use OkHttp rather than introducing Flutter, child-process runtimes or broad permissions.
 
@@ -14,3 +32,19 @@ Verified documentation endpoints:
 - [food_entry.create](https://platform.fatsecret.com/docs/v1/food_entry.create), [food_entries.get](https://platform.fatsecret.com/docs/v1/food_entries.get)
 
 Old hyphenated `docs/v1/food-entry.create` redirects to general documentation; use underscore names. API keys, developer entitlement, regional food availability and real diary visibility cannot be validated without user configuration on-device. API responses do not provide idempotency keys. Never retry create automatically: persist a write intent first, verify by returned entry ID and quarantine uncertain writes until the user inspects the diary. Multi-item meals are not atomic; report verified partial progress.
+
+## Telegram dispatch and foreground lifecycle
+A user starts/stops a `specialUse` foreground service. This type fits an opt-in persistent command listener without Android 15's dataSync six-hour limit. API 30 remains the target device; Android 14/15 behavior and distribution policy are not yet device-tested. No boot receiver, background start or silent permission grants. A single worker serializes commands. Bot-scoped update offsets are encrypted and committed before dispatch; delivery is at-most-once (a crash may lose a command). Only fresh messages from the allowlisted private chat and matching sender are accepted; forwarded/via-bot messages are rejected. Both Telegram rate-limit formats are honored. 401/403/409 stop polling; network failures back off with jitter. A new bot token receives its own offset scope.
+
+## Write safety and inference boundaries
+LLM parses data only; it has no tools or Android executor and cannot confirm a write. Structured `/meal` works without AI. Each item requires explicit search-result selection, an expiring meal-wide review nonce and confirmation. Existing foods on the date trigger a warning. Before each create, encrypted write intent is synchronously committed. Review is consumed before effects. Read-back checks entry ID, food/serving IDs, date, meal and quantity. Any create/read-back failure retains the block; no automatic retry or rollback. Unsent items are not sent after an uncertain result. Local acknowledgement requires stopping the active worker and manually inspecting the diary. Keystore/storage errors fail closed.
+
+OkHttp automatic connection retries and redirects are disabled. A network interceptor changes `503 Retry-After: 0` to a positive delay because OkHttp otherwise automatically repeats such requests independently of `retryOnConnectionFailure(false)`. A regression test asserts a single POST. Responses/downloads are bounded; remote errors are redacted. AI uploads are opt-in, HTTPS only, memory-only for attachments, with provider-specific compatibility left to live validation.
+
+## 15.11.2026: независимая настройка Telegram и безопасная диагностика
+
+Telegram должен проверяться без ключей FatSecret и ИИ. Интерфейс разделён на вкладки; состояние службы обновляется автоматически, сохранение каждой секции проверяет только её поля. getMe/getWebhookInfo не подтверждают возможность polling сами по себе: состояние подключения выставляется после успешного getUpdates. 401/403/404/409 требуют исправления, временные сетевые ошибки переподключаются с паузой. Старые сообщения не выполняются, но больше не теряются для пользователя молча.
+
+Формы остаются под FLAG_SECURE. На диагностике флаг снимается только после commit обезличенного кадра и возвращается до ухода к форме или в фон. Скриншоты тестового APK с пустой конфигурацией - отдельный emulator-only механизм, отсутствующий в основном APK. Живые credentials импортируются только тестовым runner, удаляются после проверки вместе с offsets; локальный источник защищён Windows DPAPI вне checkout.
+
+Олег пока не имеет developer-доступа FatSecret. Это блокирует реальную приёмку API, но не тестирование Telegram/UI. Бесплатный Basic и OAuth существующего аккаунта документированы провайдером; права, аккаунт и реальные записи нужно проверить отдельно. Новый локальный дневник вместо существующего FatSecret или выдуманный Accessibility-сценарий не подставляются.

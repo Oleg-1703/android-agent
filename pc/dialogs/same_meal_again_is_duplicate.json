@@ -1,0 +1,84 @@
+{
+ "name": "same_meal_again_is_duplicate",
+ "about": "the same meal sent again 20 minutes after logging is shown as a draft, never written at once",
+ "images": {},
+ "turns": [
+  {
+   "text": "котлеты 335 г, на 100 г: 200 ккал, белки 10, жиры 10, углеводы 10",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Котлеты",
+       "grams": "335",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "200",
+        "protein": "10",
+        "fat": "10",
+        "carbs": "10"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "prepared"
+   }
+  },
+  {
+   "at": 20,
+   "text": "котлеты 335 г, на 100 г: 200 ккал, белки 10, жиры 10, углеводы 10",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Котлеты",
+       "grams": "335",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "200",
+        "protein": "10",
+        "fat": "10",
+        "carbs": "10"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft",
+    "duplicate": true,
+    "reply_contains": [
+     "12:00",
+     "Записать ещё раз?"
+    ],
+    "prompt_contains": [
+     "УЖЕ записаны"
+    ]
+   }
+  },
+  {
+   "at": 21,
+   "text": "ок",
+   "expect": {
+    "outcome": "prepared",
+    "model_called": false
+   }
+  }
+ ]
+}

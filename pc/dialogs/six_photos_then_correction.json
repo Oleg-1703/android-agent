@@ -1,0 +1,137 @@
+{
+ "name": "six_photos_then_correction",
+ "about": "6 photos with a caption naming one label, then a correction referring to a photo; the model must get all images again",
+ "images": {
+  "p1": "1",
+  "p2": "2",
+  "p3": "3",
+  "p4": "4",
+  "p5": "5",
+  "p6": "6"
+ },
+ "turns": [
+  {
+   "text": "ужин, на этикетке 3 творог 200 г",
+   "images": [
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+    "p6"
+   ],
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "dinner",
+     "items": [
+      {
+       "query": "Творог",
+       "grams": "200",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "120",
+        "protein": "16",
+        "fat": "5",
+        "carbs": "3"
+       }
+      },
+      {
+       "query": "Морковь",
+       "grams": "100",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "41",
+        "protein": "1",
+        "fat": "0.2",
+        "carbs": "10"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft",
+    "model_images": 6,
+    "items_include": [
+     "творог",
+     "морковь"
+    ]
+   }
+  },
+  {
+   "at": 1,
+   "text": "нет, морковь - это салат со скрина",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "dinner",
+     "items": [
+      {
+       "query": "Творог",
+       "grams": "200",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "120",
+        "protein": "16",
+        "fat": "5",
+        "carbs": "3"
+       }
+      },
+      {
+       "query": "Салат",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "90",
+        "protein": "2",
+        "fat": "6",
+        "carbs": "7"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft",
+    "model_images": 6,
+    "prompt_contains": [
+     "фото №6",
+     "ужин, на этикетке 3"
+    ],
+    "items_include": [
+     "творог",
+     "салат"
+    ],
+    "items_exclude": [
+     "морковь"
+    ]
+   }
+  },
+  {
+   "at": 2,
+   "text": "ок",
+   "expect": {
+    "outcome": "prepared",
+    "model_called": false,
+    "items_include": [
+     "салат"
+    ]
+   }
+  }
+ ]
+}
