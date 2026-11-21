@@ -1,11 +1,16 @@
+import base64
 from pathlib import Path
 import json
+import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
 import brain
 from meal_jobs import MealJobs
+from meal_thread import MealThreads
+import dialog_runner
 from nutrition import enrich, exact_facts, table, table_rows
 
 SNICKERS = {"found": True, "exact_match": True, "product": "Snickers 50.5 g", "basis_grams": "100", "calories": "488",
@@ -91,97 +96,133 @@ class TableRows(unittest.TestCase):
         json.dumps(data)
 
 
-class Memory(unittest.TestCase):
-    def jobs(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        jobs = MealJobs(Path(directory.name) / "jobs.sqlite", lambda payload: {"status": "complete"})
-        self.addCleanup(jobs.close)
-        return jobs
-
-    def put(self, jobs, key, state, result, with_plan=True):
-        jobs.remember(key, "обед", plan(item("Сникерс", "26", "web", ("100", "488", "9", "24", "60"))) if with_plan else None)
-        with jobs.connection() as db:
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?)", (key, key, state, json.dumps(result)))
-
-    def test_only_a_failed_job_that_saved_nothing_can_retry(self):
-        jobs = self.jobs()
-        self.put(jobs, "a" * 32, "failed", {"message": "дневник не прочитан"})
-        self.put(jobs, "b" * 32, "failed", {"message": "partial", "receipts": [{"preview": "x"}]})
-        self.put(jobs, "c" * 32, "uncertain", {"message": "?"})
-        self.put(jobs, "d" * 32, "failed", {"message": "вопрос", "reply": True})
-        self.put(jobs, "e" * 32, "failed", {"message": "без плана"}, with_plan=False)
-        flags = {row["key"][0]: row["can_retry"] for row in jobs.recent("z" * 32)}
-        self.assertEqual(flags, {"a": True, "b": False, "c": False, "d": False, "e": False})
-
-    def test_reply_is_not_labelled_as_an_error(self):
-        jobs = self.jobs()
-        self.put(jobs, "a" * 32, "failed", {"message": "Что именно вы ели?", "reply": True})
-        self.put(jobs, "b" * 32, "failed", {"message": "сбой"})
-        self.assertEqual(jobs.get("a" * 32)["message"], "Что именно вы ели?")
-        self.assertTrue(jobs.get("b" * 32)["message"].startswith("Последний запрос завершился ошибкой."))
-
-
-class Retry(unittest.TestCase):
-    def row(self, state="failed", can_retry=True):
-        return {"key": "k" * 32, "state": state, "text": "обед", "can_retry": can_retry,
-                "plan": plan(item("Сникерс", "26", "web", ("100", "488", "9", "24", "60")))}
-
-    def test_failed_plan_is_reused_without_a_new_lookup(self):
-        result = brain.BrainServer.retry_plan([self.row()], 1, "2026-11-20")
-        self.assertNotIn("status", result)
-        self.assertEqual(result["items"][0]["source"], "web")
-
-    def test_never_repeats_saved_or_uncertain_or_running_or_stale(self):
-        for row, date in ((self.row("complete"), "2026-11-20"), (self.row("uncertain", False), "2026-11-20"),
-                          (self.row("executing", False), "2026-11-20"), (self.row(), "2026-11-21")):
-            self.assertTrue(brain.BrainServer.retry_plan([row], 1, date)["reply"])
-        self.assertTrue(brain.BrainServer.retry_plan([self.row()], 3, "2026-11-20")["reply"])
-
-
-class Process(unittest.TestCase):
-    def server(self, model):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        server = brain.BrainServer.__new__(brain.BrainServer)
-        server.cwd, server.cli = Path(directory.name), "claude"
-        server.busy = __import__("threading").Lock()
-        server.jobs = MealJobs(Path(directory.name) / "jobs.sqlite", lambda payload: {"status": "complete"})
-        self.addCleanup(server.jobs.close)
-        server.web_search = lambda payload, schema, system: SNICKERS
-        patcher = patch.object(brain, "parse_meal", side_effect=model)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return server
-
-    def test_new_meal_gets_web_nutrition_and_a_table_then_retry_reuses_it(self):
-        meal = plan(grams_item("Сникерс", "26", "estimate", "stated", ("100", "1", "1", "1", "1")))
-        answers = [meal, {"action": "retry", "ref": 1, "items": [], "question": "", "date": "2026-11-20", "meal": "lunch"}]
-        server = self.server(lambda *args, **kwargs: answers.pop(0))
-        first = server.process_custom_meal({"text": "обед сникерс 26 г", "date": "2026-11-20", "target": "phone", "_execution_id": "1" * 32})
-        self.assertEqual(first["plan"]["items"][0]["source"], "web")
-        self.assertIn("Итого 26 г: 127 ккал", first["plan"]["notes"])
-        with server.jobs.connection() as db:
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?)", ("1" * 32, "f", "failed", json.dumps({"message": "дневник не прочитан"})))
-        second = server.process_custom_meal({"text": "попробуй ещё раз", "date": "2026-11-20", "target": "phone", "_execution_id": "2" * 32})
-        self.assertEqual(second["status"], "prepared")
-        self.assertEqual(second["plan"]["_execution_id"], "2" * 32)
-        self.assertEqual(second["plan"]["items"], first["plan"]["items"])
-        with server.jobs.connection() as db:
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?)", ("2" * 32, "g", "failed", "{}"))
-        self.assertEqual([row["key"] for row in server.jobs.recent("9" * 32)], ["2" * 32])
-
-    def test_question_is_a_reply_not_an_error(self):
-        server = self.server(lambda *args, **kwargs: {"question": "Что вы ели?", "items": [], "date": "2026-11-20", "meal": "other"})
-        result = server.process_custom_meal({"text": "обед", "date": "2026-11-20", "target": "phone", "_execution_id": "3" * 32})
-        self.assertEqual(result, {"status": "failed", "reply": True, "message": "Что вы ели?"})
-
-
 def grams_item(query, grams, source, grams_source, nutrition=("100", "200", "10", "10", "10")):
     return {**item(query, grams, source, nutrition), "grams_source": grams_source}
 
 
-class Confirmation(unittest.TestCase):
+def meal_answer(*items, kind="meal", reply=""):
+    return {"kind": kind, "reply": reply, "meal": {"date": "2026-11-20", "meal": "lunch", "items": list(items), "notes": "оценка"}}
+
+
+PNG = base64.b64encode(dialog_runner.make_png("1")).decode()
+
+
+def image():
+    return {"media_type": "image/png", "data": PNG}
+
+
+class Store(unittest.TestCase):
+    def store(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = Path(directory.name)
+        return MealThreads(self.dir / "t.sqlite", self.dir / "thread-images")
+
+    def test_turns_keep_order_images_and_draft(self):
+        threads = self.store()
+        thread = threads.open_thread(1000)
+        threads.add_turn(thread, "user", "обед", "", [image(), image()], now=1001)
+        threads.add_turn(thread, "bot", "черновик", now=1002)
+        threads.set_draft(thread, {"items": []})
+        self.assertEqual(threads.open_thread(1100), thread)
+        turns = threads.turns(thread)
+        self.assertEqual([(t["role"], len(t["images"])) for t in turns], [("user", 2), ("bot", 0)])
+        self.assertEqual(turns[0]["images"][0]["data"], PNG)
+        self.assertEqual(len(list((self.dir / "thread-images").iterdir())), 2)
+        self.assertEqual(threads.draft(thread), {"items": []})
+
+    def test_closing_deletes_images_and_the_draft(self):
+        threads = self.store()
+        thread = threads.open_thread(1000)
+        threads.add_turn(thread, "user", "обед", "", [image()], now=1001)
+        threads.set_draft(thread, {"items": []})
+        threads.close(thread, "prepared", now=1002, job="j", meal={"meal": "lunch", "items": []})
+        self.assertEqual(list((self.dir / "thread-images").iterdir()), [])
+        self.assertIsNone(threads.draft(thread))
+        self.assertNotEqual(threads.open_thread(1003), thread)
+
+    def test_cancel_closes_and_reports_a_waiting_draft(self):
+        threads = self.store()
+        self.assertFalse(threads.cancel(1000))
+        thread = threads.open_thread(1000)
+        threads.add_turn(thread, "user", "обед", "", [image()], now=1001)
+        self.assertFalse(threads.cancel(1002))
+        thread = threads.open_thread(1003)
+        threads.set_draft(thread, {"items": []})
+        self.assertTrue(threads.cancel(1004))
+        self.assertEqual(list((self.dir / "thread-images").iterdir()), [])
+        self.assertIsNone(threads.draft(threads.open_thread(1005)))
+
+    def test_idle_thread_expires_after_three_hours(self):
+        threads = self.store()
+        thread = threads.open_thread(1000)
+        threads.add_turn(thread, "user", "обед", "", [image()], now=1000)
+        self.assertEqual(threads.open_thread(1000 + 3 * 3600), thread)
+        fresh = threads.open_thread(1000 + 3 * 3600 + 1)
+        self.assertNotEqual(fresh, thread)
+        self.assertEqual(threads.turns(fresh), [])
+        self.assertEqual(list((self.dir / "thread-images").iterdir()), [])
+
+    def test_cleanup_removes_images_after_24_hours_and_stray_files(self):
+        threads = self.store()
+        thread = threads.open_thread(1000)
+        threads.add_turn(thread, "user", "обед", "", [image()], now=1000)
+        stray = self.dir / "thread-images" / "t9-old.png"
+        stray.write_bytes(b"x")
+        os.utime(stray, (1, 1))
+        threads.cleanup(1000 + 24 * 3600 + 1)
+        self.assertEqual(list((self.dir / "thread-images").iterdir()), [])
+        self.assertEqual(threads.turns(thread)[0]["images"], [])
+
+    def test_closed_meals_resolve_the_job_state_lazily(self):
+        threads = self.store()
+        for number, job in enumerate(("w", "u", "f", "p"), 1):
+            thread = threads.open_thread(1000 * number)
+            threads.close(thread, "prepared", now=1000 * number + 1, job=job, meal={"meal": "lunch", "items": [{"query": job}]})
+        states = {"w": "complete", "u": "uncertain", "f": "failed", "p": "executing"}
+        rows = threads.closed_meals(5000, hours=6, job_state=states.get)
+        self.assertEqual([(row["items"][0]["query"], row["state"]) for row in rows], [("p", "pending"), ("u", "uncertain"), ("w", "written")])
+        self.assertEqual(threads.closed_meals(5000 + 7 * 3600, hours=6, job_state=states.get), [])
+
+
+class Prompt(unittest.TestCase):
+    def turn(self, role, text, count=0, ts=1000):
+        return {"role": role, "ts": ts, "text": text, "voice": "", "images": [image() for _ in range(count)]}
+
+    def test_dialog_order_voice_draft_and_closed_meals(self):
+        closed = [{"closed": 1, "meal": "lunch", "state": "written", "items": [{"query": "Суп", "grams": "300"}]}]
+        voice = {**self.turn("user", "", 0), "voice": "курицы 150"}
+        prompt, images = brain.build_prompt("2026-11-20", 2000, closed, [self.turn("user", "обед", 1), self.turn("bot", "Черновик?"), voice],
+                                            {"date": "2026-11-20", "meal": "lunch", "items": [{"query": "Курица"}], "_execution_id": "k"},
+                                            self.turn("user", "ок, но без соли"))
+        self.assertEqual(len(images), 1)
+        self.assertIn("УЖЕ записаны", prompt)
+        self.assertIn("Суп 300 г", prompt)
+        self.assertLess(prompt.index("Пользователь: обед [фото №1]"), prompt.index("Бот (ты): Черновик?"))
+        self.assertLess(prompt.index("Черновик?"), prompt.index("[голос, расшифровка: курицы 150]"))
+        self.assertIn('"Курица"', prompt)
+        self.assertNotIn("_execution_id", prompt)
+        self.assertTrue(prompt.rstrip().endswith("Пользователь: ок, но без соли"))
+
+    def test_only_the_newest_ten_images_are_attached_and_numbered(self):
+        prompt, images = brain.build_prompt("2026-11-20", 2000, [], [self.turn("user", "первые", 7), self.turn("user", "ещё", 5)], None,
+                                            self.turn("user", "вот", 1))
+        self.assertEqual(len(images), 10)
+        self.assertEqual(prompt.count("не приложено"), 3)
+        self.assertIn("фото №10", prompt)
+        self.assertNotIn("фото №11", prompt)
+        self.assertIn("Текущий черновик: нет.", prompt)
+
+    def test_duplicate_needs_same_type_half_the_items_and_three_hours(self):
+        plan_ = plan(item("Курица", "1", "label"), item("Рис", "1", "label"))
+        row = {"closed": 1000, "meal": "lunch", "state": "written", "items": [{"query": "курица!"}]}
+        self.assertIs(brain.duplicate_of(plan_, [row], 1000 + 3600), row)
+        self.assertIsNone(brain.duplicate_of(plan_, [row], 1000 + 3 * 3600 + 1))
+        self.assertIsNone(brain.duplicate_of(plan_, [{**row, "meal": "dinner"}], 1100))
+        self.assertIsNone(brain.duplicate_of(plan(item("А", "1", "label"), item("Б", "1", "label"), item("В", "1", "label")), [row], 1100))
+
+
+class ServerFlow(unittest.TestCase):
     DATE = "2026-11-20"
 
     def setUp(self):
@@ -189,18 +230,19 @@ class Confirmation(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.server = server = brain.BrainServer.__new__(brain.BrainServer)
         server.cwd, server.cli = Path(directory.name), "claude"
-        server.busy = __import__("threading").Lock()
+        server.busy = threading.Lock()
         server.jobs = MealJobs(Path(directory.name) / "jobs.sqlite", lambda payload: {"status": "complete"})
+        server.threads = MealThreads(Path(directory.name) / "t.sqlite", Path(directory.name) / "thread-images")
         self.addCleanup(server.jobs.close)
-        self.searches, self.contexts, self.answers, self.counter = [], [], [], 0
+        self.searches, self.calls, self.answers, self.counter = [], [], [], 0
 
         def web(payload, schema, system):
             self.searches.append(payload["product"])
             return SNICKERS
         server.web_search = web
 
-        def model(text, date, cli, cwd, **kwargs):
-            self.contexts.append(kwargs.get("context"))
+        def model(prompt, date, cli, cwd, **kwargs):
+            self.calls.append({"prompt": prompt, **kwargs})
             return self.answers.pop(0)
         patcher = patch.object(brain, "parse_meal", side_effect=model)
         patcher.start()
@@ -214,176 +256,113 @@ class Confirmation(unittest.TestCase):
             db.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?)", (key, key, result["status"], json.dumps(result, ensure_ascii=False)))
         return result
 
-    def photo_meal(self):
-        return plan(grams_item("Курица", "150", "estimate", "estimate", ("100", "165", "31", "3.6", "0")),
-                    grams_item("Картошка", "200", "estimate", "estimate", ("100", "80", "2", "0.1", "17")))
+    def estimates(self):
+        return meal_answer(grams_item("Курица", "150", "estimate", "estimate", ("100", "165", "31", "3.6", "0")),
+                           grams_item("Картошка", "200", "estimate", "estimate", ("100", "80", "2", "0.1", "17")))
 
-    def draft(self):
-        self.answers.append(self.photo_meal())
-        result = self.send("обед")
+    def test_estimate_is_a_draft_with_table_and_the_thread_keeps_it(self):
+        self.answers.append(self.estimates())
+        result = self.send("обед", images=[image()])
         self.assertTrue(result["confirm"] and result["reply"])
-        return result
-
-    def test_exact_plan_is_prepared_without_confirmation(self):
-        self.answers.append(plan(grams_item("Котлеты", "335", "label", "stated", ("100", "200", "15", "10", "10"))))
-        result = self.send("котлеты 335 г по этикетке")
-        self.assertEqual(result["status"], "prepared")
-        self.assertNotIn("confirm", result)
-
-    def test_estimate_is_shown_with_table_and_not_prepared(self):
-        result = self.draft()
-        self.assertEqual(result["status"], "failed")
         self.assertIn("1. Курица - 150 г", result["message"])
-        self.assertIn("Итого 350 г", result["message"])
         self.assertIn("✅ Записать", result["message"])
-        self.assertEqual(self.server.jobs.recent("z" * 32)[0]["awaiting"], True)
-        self.assertEqual(self.server.jobs.recent("z" * 32)[0]["plan"]["items"][1]["query"], "Картошка")
+        thread = self.server.threads.open_thread()
+        self.assertEqual(self.server.threads.draft(thread)["items"][1]["query"], "Картошка")
+        turns = self.server.threads.turns(thread)
+        self.assertEqual([t["role"] for t in turns], ["user", "bot"])
+        self.assertEqual(turns[1]["text"], result["message"])
+        self.assertEqual(len(turns[0]["images"]), 1)
 
-    def test_rich_table_capability_replaces_the_plain_table(self):
-        self.answers.append(self.photo_meal())
+    def test_rich_table_replaces_the_plain_table_and_ok_prepares_it(self):
+        self.answers.append(self.estimates())
         result = self.send("обед", capabilities=["rich_table"])
-        self.assertTrue(result["confirm"] and result["reply"])
         self.assertEqual(result["table"]["total"]["grams"], "350")
         self.assertEqual(result["meal"], "lunch")
-        self.assertEqual(len(result["table"]["rows"]), 2)
         self.assertNotIn("Расчёт КБЖУ", result["message"])
-        self.assertNotIn("Итого", result["message"])
         self.assertNotIn("Записать так", result["message"])
-        saved = self.server.jobs.recent("z" * 32)[0]["plan"]
-        self.assertEqual(saved["table"], result["table"])
-        self.assertNotIn("Расчёт КБЖУ", saved["notes"])
+        self.assertIn("Итого 350 г", self.server.threads.turns(self.server.threads.open_thread())[1]["text"])
         confirmed = self.send("ок", capabilities=["rich_table"])
         self.assertEqual(confirmed["status"], "prepared")
         self.assertEqual(confirmed["plan"]["table"], result["table"])
+        self.assertEqual(len(self.calls), 1)
 
-    def test_without_capability_the_plain_table_stays(self):
-        result = self.draft()
+    def test_plain_table_without_capability(self):
+        self.answers.append(self.estimates())
+        result = self.send("обед")
         self.assertNotIn("table", result)
         self.assertIn("Расчёт КБЖУ по позициям", result["message"])
 
-    def test_voice_after_captioned_photos_revises_the_draft_and_exact_plan_is_prepared(self):
-        self.draft()
-        exact = plan(grams_item("Курица", "150", "label", "stated", ("100", "165", "31", "3.6", "0")),
-                     grams_item("Картошка", "200", "label", "stated", ("100", "80", "2", "0.1", "17")))
-        self.answers.append(exact)
-        result = self.send("Описание голосом: на обед, курицы 150, картошки 200")
-        context = self.contexts[1]["recent_requests"][0]
-        self.assertTrue(context["awaiting_confirmation"])
-        self.assertEqual([row["query"] for row in context["draft_items"]], ["Курица", "Картошка"])
-        self.assertEqual(result["status"], "prepared")
-        self.assertNotIn("confirm", result)
-        self.assertIn("CORRECTION of that draft", brain.SYSTEM)
-        self.assertIn("grams_source='stated'", brain.SYSTEM)
-
-    def test_announcement_then_photos_combine_with_the_earlier_request(self):
-        self.answers.append({"question": "", "items": [], "date": self.DATE, "meal": "other", "action": "answer", "reply": "Жду фото."})
-        first = self.send("сейчас скину фото обеда")
-        self.assertEqual(first["message"], "Жду фото.")
-        self.answers.append(self.photo_meal())
-        image = {"media_type": "image/jpeg", "data": "x"}
-        result = self.send("Разбери присланные фото", images=[image])
-        context = self.contexts[1]["recent_requests"][0]
-        self.assertTrue(context["awaiting_more_input"])
-        self.assertIn("сейчас скину фото обеда", context["request_text"])
-        self.assertEqual(result["status"], "failed")
-        self.assertTrue(result["confirm"])
-        self.assertIn("awaiting_more_input", brain.SYSTEM)
-
-    def test_awaiting_more_input_expires_after_ten_minutes(self):
-        self.answers.append({"question": "", "items": [], "date": self.DATE, "meal": "other", "action": "answer", "reply": "Жду фото."})
-        self.send("сейчас скину фото")
-        with self.server.jobs.connection() as db:
-            db.execute("UPDATE memory SET created=created-?", (11 * 60,))
-        self.answers.append(self.photo_meal())
-        self.send("Разбери присланные фото", images=[{"media_type": "image/jpeg", "data": "x"}])
-        self.assertFalse(self.contexts[1]["recent_requests"][0]["awaiting_more_input"])
-
-    def test_ok_and_button_prepare_the_same_plan_without_a_model_call(self):
+    def test_ok_words_and_button_prepare_without_a_model_call(self):
         for word in ("ок", "✅ Записать", "Всё верно!"):
             self.setUp()
-            draft = self.draft()
-            before = len(self.contexts)
+            self.answers.append(self.estimates())
+            self.send("обед")
             result = self.send(word)
             self.assertEqual(result["status"], "prepared", word)
-            self.assertEqual(len(self.contexts), before)
-            self.assertEqual([row["query"] for row in result["plan"]["items"]], ["Курица", "Картошка"])
+            self.assertEqual(len(self.calls), 1)
             self.assertEqual(result["plan"]["_execution_id"], f"{self.counter:032x}")
-            self.assertEqual(result["plan"]["notes"].split("\n\n")[0], draft["message"].split("\n\n")[0])
+            self.assertEqual(self.server.threads.open_thread() and self.server.threads.draft(self.server.threads.open_thread()), None)
 
-    def test_confirm_word_with_photo_goes_to_the_model(self):
-        self.draft()
-        self.answers.append(plan(grams_item("Пицца", "100", "label", "stated")))
-        image = {"media_type": "image/jpeg", "data": "x"}
-        self.assertEqual(self.send("ок", images=[image])["status"], "prepared")
-        self.assertEqual(len(self.contexts), 2)
+    def test_confirm_word_with_a_photo_goes_to_the_model(self):
+        self.answers.append(self.estimates())
+        self.send("обед")
+        self.answers.append(meal_answer(grams_item("Пицца", "100", "label", "stated")))
+        self.assertEqual(self.send("ок", images=[image()])["status"], "prepared")
+        self.assertEqual(len(self.calls), 2)
 
-    def test_second_ok_does_not_prepare_again(self):
-        self.draft()
+    def test_ok_without_a_draft_goes_to_the_model(self):
+        self.answers.append(meal_answer(grams_item("Яблоко", "100", "user", "stated")))
         self.assertEqual(self.send("ок")["status"], "prepared")
-        self.answers.append({"question": "", "items": [], "date": self.DATE, "meal": "other", "action": "answer", "reply": "Уже записано."})
-        again = self.send("ок")
-        self.assertEqual(again["status"], "failed")
-        self.assertEqual(len(self.contexts), 2)
 
-    def test_retry_of_a_draft_says_it_was_not_written(self):
-        self.draft()
-        row = self.server.jobs.recent("z" * 32)[0]
-        text = brain.BrainServer.retry_plan([row], 1, self.DATE)["message"]
-        self.assertIn("не записан", text)
-        self.assertIn("✅ Записать", text)
-        self.assertNotIn("частично", text)
-        row["minutes_ago"] = 200
-        self.assertNotIn("✅ Записать", brain.BrainServer.retry_plan([row], 1, self.DATE)["message"])
-        self.assertNotIn("частично", brain.BrainServer.retry_plan([row, row], 2, self.DATE)["message"])
+    def test_chat_keeps_the_draft_and_empty_reply_gets_a_fallback(self):
+        self.answers.append(self.estimates())
+        self.send("обед")
+        self.answers.append({"kind": "chat", "reply": "Около 36 г.", "meal": None})
+        self.assertEqual(self.send("сколько белка?"), {"status": "failed", "reply": True, "message": "Около 36 г."})
+        self.assertIsNotNone(self.server.threads.draft(self.server.threads.open_thread()))
+        self.answers.append({"kind": "chat", "reply": "", "meal": None})
+        self.assertTrue(self.send("эээ")["reply"])
+        self.answers.append({"kind": "meal", "reply": "Записал!", "meal": None})
+        self.assertNotIn("Записал", self.send("ну")["message"])
 
-    def test_ok_without_a_draft_falls_through_to_the_model(self):
-        self.answers.append(plan(grams_item("Яблоко", "100", "user", "stated")))
-        self.assertEqual(self.send("ок")["status"], "prepared")
-        self.assertEqual(len(self.contexts), 1)
-
-    def test_old_draft_is_not_confirmed(self):
-        self.draft()
-        with self.server.jobs.connection() as db:
-            db.execute("UPDATE memory SET created=created-?", (121 * 60,))
-        self.answers.append({"question": "Что записать?", "items": [], "date": self.DATE, "meal": "other"})
-        self.assertEqual(self.send("ок")["message"], "Что записать?")
-        self.assertEqual(len(self.contexts), 2)
-        self.assertFalse(any(row.get("awaiting_confirmation") for row in self.contexts[1]["recent_requests"]))
-
-    def test_correction_sees_the_draft_and_is_shown_again(self):
-        self.draft()
-        fixed = plan(grams_item("Курица", "100", "estimate", "stated", ("100", "165", "31", "3.6", "0")),
-                     grams_item("Картошка", "200", "estimate", "estimate", ("100", "80", "2", "0.1", "17")))
-        self.answers.append(fixed)
-        result = self.send("курицы было меньше, 100 грамм")
-        context = self.contexts[1]["recent_requests"][0]
-        self.assertTrue(context["awaiting_confirmation"])
-        self.assertEqual(context["meal"], "lunch")
-        self.assertEqual([row["query"] for row in context["draft_items"]], ["Курица", "Картошка"])
-        self.assertEqual(context["draft_items"][0]["grams_source"], "estimate")
-        self.assertTrue(result["confirm"])
-        self.assertIn("1. Курица - 100 г", result["message"])
-        self.assertEqual(self.send("ок")["plan"]["items"][0]["grams"], "100")
-
-    def test_fully_stated_correction_is_prepared_at_once(self):
-        self.draft()
-        self.answers.append(plan(grams_item("Курица", "100", "estimate", "stated"), grams_item("Картошка", "250", "user", "stated")))
-        self.assertEqual(self.send("курицы 100, картошки 250")["status"], "prepared")
+    def test_model_failure_leaves_the_thread_untouched(self):
+        self.answers.append(self.estimates())
+        self.send("обед", images=[image()])
+        patcher = patch.object(brain, "parse_meal", side_effect=brain.SubscriptionLimit("19:00"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with self.assertRaises(ValueError):
+            self.send("поправка")
+        self.assertEqual(len(self.server.threads.turns(self.server.threads.open_thread())), 2)
 
     def test_unchanged_web_item_is_not_searched_again(self):
-        self.answers.append(plan(grams_item("Сникерс", "26", "estimate", "estimate", ("100", "1", "1", "1", "1")),
-                                 grams_item("Картошка", "200", "estimate", "estimate", ("100", "80", "2", "0.1", "17"))))
-        first = self.send("обед")
+        self.answers.append(meal_answer(grams_item("Сникерс", "26", "estimate", "estimate", ("100", "1", "1", "1", "1")),
+                                        grams_item("Картошка", "200", "estimate", "estimate", ("100", "80", "2", "0.1", "17"))))
+        self.send("обед")
         self.assertEqual(self.searches, ["Сникерс", "Картошка"])
-        self.assertEqual(first["confirm"], True)
         self.searches.clear()
-        self.answers.append(plan(grams_item("сникерс ", "26", "estimate", "estimate", ("100", "1", "1", "1", "1")),
-                                 grams_item("Картошка", "300", "user", "stated", ("100", "80", "2", "0.1", "17"))))
+        self.answers.append(meal_answer(grams_item("сникерс ", "26", "estimate", "estimate", ("100", "1", "1", "1", "1")),
+                                        grams_item("Картошка", "300", "user", "stated", ("100", "80", "2", "0.1", "17"))))
         second = self.send("картошки больше, 300")
         self.assertEqual(self.searches, [])
-        row = second["message"] if second["status"] == "failed" else second["plan"]["items"][0]
         self.assertEqual(second["status"], "failed")
         self.assertIn("[сайт www.mars.com]", second["message"])
+
+    def test_corrected_plan_with_wrong_date_is_refused_and_recorded(self):
+        answer = self.estimates()
+        answer["meal"]["date"] = "2026-11-19"
+        self.answers.append(answer)
+        with self.assertRaises(ValueError):
+            self.send("обед")
+        self.assertEqual([t["role"] for t in self.server.threads.turns(self.server.threads.open_thread())], ["user", "bot"])
+
+    def test_prompt_carries_closed_meals_and_the_draft(self):
+        self.answers.append(meal_answer(grams_item("Суп", "300", "label", "stated")))
+        self.assertEqual(self.send("суп 300 г")["status"], "prepared")
+        self.answers.append(self.estimates())
+        self.send("обед")
+        self.assertIn("УЖЕ записаны", self.calls[1]["prompt"])
+        self.assertIn("Суп 300 г", self.calls[1]["prompt"])
 
     def test_needs_confirmation_rules(self):
         exact = [grams_item("A", "1", "label", "stated"), grams_item("B", "1", "web", "stated"),
@@ -393,57 +372,63 @@ class Confirmation(unittest.TestCase):
             self.assertTrue(brain.needs_confirmation(plan(*exact, bad)))
         self.assertFalse(brain.needs_confirmation(plan({"query": "F", "source": "saved", "grams_source": "estimate"})))
 
-    def test_ok_after_cancel_is_not_confirmed(self):
-        self.draft()
-        self.assertTrue(self.server.jobs.cancel_draft())
-        self.assertFalse(self.server.jobs.cancel_draft())
-        self.answers.append({"question": "Что записать?", "items": [], "date": self.DATE, "meal": "other"})
-        self.assertEqual(self.send("ок")["message"], "Что записать?")
-        self.assertEqual(len(self.contexts), 2)
-
-    def test_cancel_only_touches_the_newest_awaiting_draft(self):
-        self.draft()
-        self.assertEqual(self.send("ок")["status"], "prepared")
-        self.assertFalse(self.server.jobs.cancel_draft())
-
-    def test_catalog_off_schema_and_prompt_have_no_existing_or_saved(self):
-        schema, system = brain.build_schema(False), brain.build_system(False)
-        self.assertEqual(schema["properties"]["items"]["items"]["properties"]["source"]["enum"], ["user", "label", "estimate", "barcode"])
-        self.assertNotIn("source=existing", system.replace("Never use source=existing or source=saved", ""))
-        self.assertIn("grams_source=estimate", system)
-        self.assertIn("User statements override all defaults.", system)
-        self.assertIn("existing", brain.build_schema(True)["properties"]["items"]["items"]["properties"]["source"]["enum"])
-        self.assertIs(brain.build_system(True), brain.SYSTEM)
-
-    def test_catalog_flag_is_passed_to_the_model(self):
-        seen = []
-        patcher = patch.object(brain, "parse_meal", side_effect=lambda *a, **k: seen.append(k) or plan(grams_item("Плов", "300", "user", "stated")))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    def test_catalog_flag_selects_schema_and_prompt(self):
+        enum = lambda schema: schema["properties"]["meal"]["anyOf"][0]["properties"]["items"]["items"]["properties"]["source"]["enum"]
+        self.assertEqual(enum(brain.build_schema(False)), ["user", "label", "estimate", "barcode"])
+        self.assertIn("existing", enum(brain.build_schema(True)))
+        self.assertIn("Never use source=existing", brain.build_system(False))
+        self.assertIn("source=saved", brain.build_system(True))
+        self.answers.append(meal_answer(grams_item("Плов", "300", "user", "stated")))
         self.send("плов 300 г")
-        self.assertNotIn("existing", seen[0]["schema"]["properties"]["items"]["items"]["properties"]["source"]["enum"])
-        self.server.config = {"phone_catalog": True}
-        self.send("плов 300 г ещё")
-        self.assertIn("existing", seen[1]["schema"]["properties"]["items"]["items"]["properties"]["source"]["enum"])
-        self.assertIs(seen[1]["system"], brain.SYSTEM)
+        self.assertNotIn("existing", enum(self.calls[0]["schema"]))
+        self.assertEqual(self.calls[0]["system"], brain.build_system(False))
+        self.assertTrue(self.calls[0]["raw"])
 
     def test_catalog_item_without_grams_is_a_question_when_catalog_is_off(self):
-        meal = plan({"query": "Бешбармак с кониной", "source": "existing", "count": "1", "unit": "servings"})
-        self.answers.append(meal)
+        answer = meal_answer({"query": "Бешбармак с кониной", "source": "existing", "count": "1", "unit": "servings"})
+        self.answers.append(answer)
         result = self.send("бешбармак")
-        self.assertEqual(result["status"], "failed")
         self.assertTrue(result["reply"])
         self.assertIn("вес", result["message"])
         self.assertNotIn("plan", result)
         self.server.config = {"phone_catalog": True}
-        self.answers.append(meal)
+        self.answers.append(answer)
         self.assertEqual(self.send("бешбармак 2")["status"], "prepared")
+
+    def test_cancel_endpoint_target_closes_the_thread(self):
+        self.answers.append(self.estimates())
+        self.send("обед", images=[image()])
+        self.assertTrue(self.server.threads.cancel())
+        self.assertFalse(self.server.threads.cancel())
+        self.answers.append({"kind": "chat", "reply": "Что записать?", "meal": None})
+        self.assertEqual(self.send("ок")["message"], "Что записать?")
 
     def test_confirm_words(self):
         for word in ("ок", "ОК.", "✅ Записать", "Окей!", "ok", "да", "Всё верно", "все верно", "подтверждаю", "запиши"):
             self.assertTrue(brain.is_confirm_word(word), word)
         for word in ("ок, но картошки больше", "не надо", "", "записать 200"):
             self.assertFalse(brain.is_confirm_word(word), word)
+
+
+class RecordedDialogs(unittest.TestCase):
+    def test_every_dialog_passes_with_a_scripted_model(self):
+        dialogs = dialog_runner.load_dialogs()
+        self.assertGreaterEqual(len(dialogs), 8)
+        for dialog in dialogs:
+            with self.subTest(dialog["name"]):
+                failures = [(number, problems) for number, problems in dialog_runner.run_dialog(dialog) if problems]
+                self.assertEqual(failures, [])
+
+    def test_the_runner_detects_a_wrong_expectation(self):
+        dialog = next(d for d in dialog_runner.load_dialogs() if d["name"] == "ok_after_draft")
+        dialog["turns"][1]["expect"] = {"outcome": "draft", "model_called": True}
+        problems = dict(dialog_runner.run_dialog(dialog))[2]
+        self.assertEqual(len(problems), 2)
+
+    def test_png_placeholder_is_a_valid_png(self):
+        data = dialog_runner.make_png("12 3")
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        brain.attachment({"media_type": "image/png", "data": base64.b64encode(data).decode()}, "image")
 
 
 if __name__ == "__main__":

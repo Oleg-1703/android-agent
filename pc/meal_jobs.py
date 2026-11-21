@@ -120,7 +120,6 @@ class MealJobs:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="custom-meal")
         with self.connection() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS memory (id TEXT PRIMARY KEY, created REAL NOT NULL, text TEXT NOT NULL, plan TEXT)")
             db.execute("UPDATE jobs SET state='uncertain', result=? WHERE state IN ('queued','running')",
                        (json.dumps({"message": "ПК перезапустился во время обработки. Проверь дневник; автоматического повтора не будет."}),))
             for key, raw in db.execute("SELECT id,result FROM jobs WHERE state='executing'").fetchall():
@@ -146,41 +145,6 @@ class MealJobs:
         if row[0] == "failed" and not result.get("reply"):
             result["message"] = "Последний запрос завершился ошибкой.\n" + result.get("message", "Запись не выполнена.")
         return result
-
-    def remember(self, key, text, plan=None):
-        with self.connection() as db:
-            db.execute("INSERT OR REPLACE INTO memory VALUES (?,?,?,?)", (key, time.time(), text, json.dumps(plan, ensure_ascii=False) if plan else None))
-
-    def forget(self, key):
-        with self.connection() as db:
-            db.execute("DELETE FROM memory WHERE id=?", (key,))
-
-    def recent(self, exclude, limit=5, max_age=86400):
-        """Newest-first earlier requests with their state; retry is allowed only for a failed job that saved nothing."""
-        with self.connection() as db:
-            rows = db.execute("SELECT m.id,m.created,m.text,m.plan,j.state,j.result FROM memory m JOIN jobs j ON j.id=m.id "
-                              "WHERE m.id!=? AND m.created>? ORDER BY m.created DESC LIMIT ?", (exclude, time.time() - max_age, limit)).fetchall()
-        out = []
-        for key, created, text, plan, state, raw in rows:
-            result = json.loads(raw)
-            out.append({"key": key, "minutes_ago": int((time.time() - created) / 60), "state": state, "text": text,
-                        "plan": json.loads(plan) if plan else None, "message": str(result.get("message", ""))[:300],
-                        "awaiting": bool(plan) and state == "failed" and result.get("confirm") is True,
-                        "replied": state == "failed" and result.get("reply") is True and not result.get("confirm"),
-                        "can_retry": bool(plan) and state == "failed" and not result.get("reply") and not result.get("receipts")})
-        return out
-
-    def cancel_draft(self):
-        """The newest request, if it is a draft awaiting confirmation, stops being confirmable."""
-        with self.lock:
-            rows = self.recent("", limit=1)
-            if not rows or not rows[0]["awaiting"]:
-                return False
-            with self.connection() as db:
-                raw = db.execute("SELECT result FROM jobs WHERE id=?", (rows[0]["key"],)).fetchone()[0]
-                data = {**json.loads(raw), "confirm": False, "cancelled": True}
-                db.execute("UPDATE jobs SET result=? WHERE id=?", (json.dumps(data, ensure_ascii=False), rows[0]["key"]))
-        return True
 
     def claim_phone(self, key):
         with self.lock, self.connection() as db:

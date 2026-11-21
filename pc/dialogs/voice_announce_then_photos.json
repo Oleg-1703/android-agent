@@ -1,0 +1,81 @@
+{
+ "name": "voice_announce_then_photos",
+ "about": "'скину фото' first, photos later as a separate message",
+ "images": {
+  "a": "1",
+  "b": "2"
+ },
+ "turns": [
+  {
+   "text": "сейчас скину фото обеда",
+   "model": {
+    "kind": "chat",
+    "reply": "Жду фото.",
+    "meal": null
+   },
+   "expect": {
+    "outcome": "reply",
+    "reply_contains": [
+     "Жду фото"
+    ],
+    "model_images": 0
+   }
+  },
+  {
+   "at": 2,
+   "text": "Разбери присланные фото",
+   "images": [
+    "a",
+    "b"
+   ],
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft",
+    "model_images": 2,
+    "prompt_contains": [
+     "сейчас скину фото обеда",
+     "Жду фото."
+    ],
+    "items_include": [
+     "курица"
+    ]
+   }
+  }
+ ]
+}

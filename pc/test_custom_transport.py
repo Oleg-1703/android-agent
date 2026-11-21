@@ -80,8 +80,8 @@ class CustomTransportTests(unittest.TestCase):
     @patch.object(brain, 'Emulator')
     @patch.object(brain, 'parse_meal')
     def test_phone_preparation_never_constructs_or_calls_emulator(self, parse, emulator):
-        parse.return_value = {'date': '2026-11-17', 'meal': 'breakfast', 'question': '', 'items': [
-            {'query': 'Fixture', 'grams': '100', 'grams_source': 'stated', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}
+        parse.return_value = {'kind': 'meal', 'reply': '', 'meal': {'date': '2026-11-17', 'meal': 'breakfast', 'items': [
+            {'query': 'Fixture', 'grams': '100', 'grams_source': 'stated', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}}
         result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17', 'target': 'phone', '_execution_id': 'a' * 64})
         self.assertEqual(result['status'], 'prepared')
         self.assertEqual(result['plan']['_execution_id'], 'a' * 64)
@@ -100,8 +100,8 @@ class CustomTransportTests(unittest.TestCase):
     @patch.object(brain, 'Emulator')
     @patch.object(brain, 'parse_meal')
     def test_emulator_receipt_preserves_whole_meal_composition(self, parse, emulator):
-        parse.return_value = {'date': '2026-11-17', 'meal': 'lunch', 'question': '', 'notes': 'Estimate', 'items': [
-            {'query': 'Fixture', 'grams': '100', 'grams_source': 'stated', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}
+        parse.return_value = {'kind': 'meal', 'reply': '', 'meal': {'date': '2026-11-17', 'meal': 'lunch', 'notes': 'Estimate', 'items': [
+            {'query': 'Fixture', 'grams': '100', 'grams_source': 'stated', 'nutrition': {'basis_grams': '100', 'calories': '89', 'protein': '1', 'fat': '0', 'carbs': '20'}}]}}
         emulator.return_value.log.return_value = {'status': 'complete', 'notes': 'Estimate\nComposition: rice, fish'}
         result = self.server.process_custom_meal({'text': 'fixture', 'date': '2026-11-17', '_execution_id': 'a' * 32})
         self.assertEqual(result['notes'], 'Estimate\nComposition: rice, fish')

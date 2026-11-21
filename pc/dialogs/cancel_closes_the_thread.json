@@ -1,0 +1,78 @@
+{
+ "name": "cancel_closes_the_thread",
+ "about": "cancel drops the draft; a later 'ок' is not a confirmation",
+ "images": {
+  "x": "1"
+ },
+ "turns": [
+  {
+   "text": "обед",
+   "images": [
+    "x"
+   ],
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft"
+   }
+  },
+  {
+   "at": 1,
+   "cancel": true,
+   "expect": {
+    "cancelled": true
+   }
+  },
+  {
+   "at": 2,
+   "text": "ок",
+   "model": {
+    "kind": "chat",
+    "reply": "Нечего записывать. Что ты ел?",
+    "meal": null
+   },
+   "expect": {
+    "outcome": "reply",
+    "model_called": true,
+    "prompt_lacks": [
+     "Курица"
+    ]
+   }
+  }
+ ]
+}

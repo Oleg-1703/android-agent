@@ -1,0 +1,116 @@
+{
+ "name": "photos_caption_then_voice",
+ "about": "two photos with a caption, then a voice note with the amounts",
+ "images": {
+  "dish": "1",
+  "side": "2"
+ },
+ "turns": [
+  {
+   "text": "обед",
+   "images": [
+    "dish",
+    "side"
+   ],
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft",
+    "items_include": [
+     "курица",
+     "картошка"
+    ],
+    "model_images": 2
+   }
+  },
+  {
+   "at": 1,
+   "voice": "на обед, курицы 150, картошки 200",
+   "text": "Разбери присланные фото",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "prepared",
+    "model_images": 2,
+    "prompt_contains": [
+     "Текущий черновик (показан",
+     "обед"
+    ],
+    "items_include": [
+     "курица",
+     "картошка"
+    ]
+   }
+  }
+ ]
+}
