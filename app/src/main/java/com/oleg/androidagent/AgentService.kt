@@ -191,7 +191,7 @@ class AgentService : Service() {
                             val started = SystemClock.elapsedRealtime()
                             var deadline = started + MealBatch.graceMillis(batch)
                             var cancelled = false
-                            while (running && batch.size < 10 && !Thread.currentThread().isInterrupted) {
+                            while (running && batch.size < 12 && !Thread.currentThread().isInterrupted) {
                                 if (queue.isEmpty()) {
                                     if (SystemClock.elapsedRealtime() >= deadline) break
                                     val seconds = ((deadline - SystemClock.elapsedRealtime() + 999) / 1000).coerceIn(1, 45).toInt()

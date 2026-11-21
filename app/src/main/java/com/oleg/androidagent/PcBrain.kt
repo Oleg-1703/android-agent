@@ -131,7 +131,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         }
     }
     fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, phoneReady: () -> Boolean = { true }, phoneSession: (() -> JSONObject) -> JSONObject = { it() }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
-        require(messages.size in 1..10)
+        require(messages.size in 1..12)
         val payload = JSONObject().put("date", LocalDate.now().toString())
         val descriptions = messages.map { it.optString("text", it.optString("caption")) }.filter { it.isNotBlank() }
         val description = descriptions.joinToString("\n").ifBlank { "Разбери присланные фото еды, этикеток или штрихкодов. Запиши свою еду в дневник." }
@@ -139,10 +139,13 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         payload.put("text", description)
         val photos = org.json.JSONArray()
         var voices = 0
+        var photoBytes = 0L
         for (message in messages) {
             if (message.has("photo")) {
                 val photo = message.objects("photo").filter { it.optLong("file_size") in 1..4_000_000 }.lastOrNull()
-                require(photo != null && photos.length() < 4) { "Пришли до четырёх фото по 4 МБ." }
+                require(photo != null && photos.length() < 10) { "Пришли до 10 фото по 4 МБ в одном запросе." }
+                photoBytes += photo.optLong("file_size")
+                require(photoBytes <= 16_000_000) { "Фото в одном запросе вместе больше 16 МБ. Пришли меньше фото." }
                 val bytes = telegram.download(photo.getString("file_id"), photo.optLong("file_size"), 4_000_000)
                 photos.put(JSONObject().put("media_type", "image/jpeg").put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)))
             }

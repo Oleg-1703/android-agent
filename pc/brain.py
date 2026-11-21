@@ -562,7 +562,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(capabilities, list) or len(capabilities) > 8 or not all(isinstance(c, str) and len(c) <= 32 for c in capabilities):
                     raise ValueError()
                 images = body.get("images", [])
-                if not isinstance(images, list) or len(images) > 4:
+                if not isinstance(images, list) or len(images) > 10:
                     raise ValueError()
                 for value in images:
                     attachment(value, "image")
