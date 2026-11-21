@@ -177,7 +177,7 @@ class AgentService : Service() {
                         catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
                         catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }
                         if (running) {
-                            telegram.send(owner, reply.text)
+                            telegram.send(owner, reply.text, reply.confirm)
                             store.put("last_delivery", System.currentTimeMillis().toString())
                         }
                         if (reply.stop) { running = false; break }

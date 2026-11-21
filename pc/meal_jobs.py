@@ -165,8 +165,21 @@ class MealJobs:
             result = json.loads(raw)
             out.append({"key": key, "minutes_ago": int((time.time() - created) / 60), "state": state, "text": text,
                         "plan": json.loads(plan) if plan else None, "message": str(result.get("message", ""))[:300],
+                        "awaiting": bool(plan) and state == "failed" and result.get("confirm") is True,
                         "can_retry": bool(plan) and state == "failed" and not result.get("reply") and not result.get("receipts")})
         return out
+
+    def cancel_draft(self):
+        """The newest request, if it is a draft awaiting confirmation, stops being confirmable."""
+        with self.lock:
+            rows = self.recent("", limit=1)
+            if not rows or not rows[0]["awaiting"]:
+                return False
+            with self.connection() as db:
+                raw = db.execute("SELECT result FROM jobs WHERE id=?", (rows[0]["key"],)).fetchone()[0]
+                data = {**json.loads(raw), "confirm": False, "cancelled": True}
+                db.execute("UPDATE jobs SET result=? WHERE id=?", (json.dumps(data, ensure_ascii=False), rows[0]["key"]))
+        return True
 
     def claim_phone(self, key):
         with self.lock, self.connection() as db:

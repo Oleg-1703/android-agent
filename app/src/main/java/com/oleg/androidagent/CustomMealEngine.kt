@@ -7,6 +7,8 @@ interface CustomMealScreen {
     fun snapshot(meal: String): DiarySnapshot
     fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String
     fun prepareExisting(meal: String, item: JSONObject, onContext: (String) -> Unit): String = throw IllegalArgumentException("Existing food unsupported")
+    fun prepareSaved(meal: String, item: JSONObject, onContext: (String) -> Unit): SavedMealDraft = throw IllegalArgumentException("Saved meal unsupported")
+    fun saveSaved(draft: SavedMealDraft, meal: String, stamp: String) { throw IllegalArgumentException("Saved meal unsupported") }
     fun cancelExistingDraft() {}
     fun diaryName(): String? = null
     fun finishPreparedCustom(item: JSONObject): String = throw IllegalArgumentException("No prepared custom form")
@@ -44,7 +46,8 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         for (attempt in 0 until 3) {
             if (attempt > 0) pause()
             val after = try { ui.snapshot(before.meal) } catch (_: IllegalArgumentException) { null }
-            if (after != null && DiaryVerification.addedExactly(before, after, preview, journal.optString("diary_name").takeIf { it.isNotBlank() })) { verified = true; break }
+            if (after != null && if (journal.has("saved_recipe")) SavedMealDraft.parse(journal.getJSONObject("saved_recipe")).verified(before, after)
+                else DiaryVerification.addedExactly(before, after, preview, journal.optString("diary_name").takeIf { it.isNotBlank() })) { verified = true; break }
         }
         require(verified) { "Не удалось подтвердить ровно одну запись. Повтор сохранения запрещён." }
         val item = journal.getJSONObject("item")
@@ -80,7 +83,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         require(plan.getString("date") == LocalDate.now().toString()) { "Пока поддерживается только сегодняшний дневник." }
         require(store.get("write_intent").isBlank()) { "Предыдущая запись не проверена. Повторное сохранение заблокировано." }
         plan.objects("items").forEach {
-            if (it.optString("source") == "existing") require(!it.has("nutrition") && !it.has("barcode"))
+            if (it.optString("source") in setOf("existing", "saved")) require(!it.has("nutrition") && !it.has("barcode"))
             else { require(it.has("nutrition")) { "Для своей еды нужны КБЖУ." }; MealNutrition.validate(it) }
         }
         val items = WholeMeal.items(plan)
@@ -91,13 +94,16 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             val before = beforeSnapshot(plan.getString("meal"))
             require(before.complete) { "Не удалось полностью прочитать дневник перед записью. Ничего нового не сохранено." }
             store.put("write_intent", JSONObject().put("mode", "custom").put("execution_id", plan.optString("_execution_id")).put("item", item).put("before", before.json()).toString())
-            val existing = item.optString("source") == "existing"
+            val saved = item.optString("source") == "saved"
+            val existing = item.optString("source") in setOf("existing", "saved")
             progress(if (existing) "Ищу указанную существующую еду в FatSecret." else "Дневник прочитан. Вношу свою еду и КБЖУ в FatSecret.")
             val onContext: (String) -> Unit = { context ->
                 store.put("write_intent", JSONObject(store.get("write_intent")).put("context", context).toString())
             }
+            var savedDraft: SavedMealDraft? = null
             val preview = try {
-                if (existing) ui.prepareExisting(plan.getString("meal"), item, onContext)
+                if (saved) ui.prepareSaved(plan.getString("meal"), item, onContext).also { savedDraft = it }.preview()
+                else if (existing) ui.prepareExisting(plan.getString("meal"), item, onContext)
                 else ui.createCustom(plan.getString("meal"), item, onContext)
             } catch (error: Exception) {
                 if (existing || (cleanupPrewrite && !ui.commitStarted())) {
@@ -115,14 +121,16 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             val diaryName = if (existing) ui.diaryName() else null
             val intent = JSONObject(store.get("write_intent")).put("preview", preview)
             if (diaryName != null) intent.put("diary_name", diaryName)
+            savedDraft?.let { intent.put("saved_recipe", it.json()) }
             store.put("write_intent", intent.toString())
-            ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
+            if (saved) ui.saveSaved(requireNotNull(savedDraft), plan.getString("meal"), ui.screenStamp())
+            else ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
             progress("Сохранение отправлено. Проверяю запись в дневнике; повторно сохранять не буду.")
             var verified = false
             for (attempt in 0 until 3) {
                 if (attempt > 0) pause()
                 val after = try { ui.snapshot(plan.getString("meal")) } catch (_: IllegalArgumentException) { null }
-                if (after != null && DiaryVerification.addedExactly(before, after, preview, diaryName)) { verified = true; break }
+                if (after != null && (savedDraft?.verified(before, after) ?: DiaryVerification.addedExactly(before, after, preview, diaryName))) { verified = true; break }
             }
             require(verified) { "Сохранение выполнено один раз, но дневник не удалось сверить. Проверь FatSecret; автоматически не повторяю." }
             receipts.put(JSONObject().put("preview", preview).put("source", item.optString("source", "user")))

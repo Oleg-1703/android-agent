@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.time.LocalDate
 import java.util.Locale
 
-data class CommandReply(val text: String, val stop: Boolean = false)
+data class CommandReply(val text: String, val stop: Boolean = false, val confirm: Boolean = false)
 
 class AgentCommands(
     private val store: StateStore,
@@ -14,11 +14,16 @@ class AgentCommands(
     private val client: OkHttpClient,
     private val ui: FatUi? = null
 ) {
+    init {
+        if (config.optBoolean("pc_consent")) ui?.candidateResolver = { item, rows, saved ->
+            PcBrain(config, client, store).resolveFood(item, rows, saved)
+        }
+    }
     fun hasPendingPhone() = config.optBoolean("pc_consent") && PcBrain(config, client, store).hasPendingPhone()
-    private fun progress(telegram: TelegramApi): (String) -> Unit = { status ->
+    private fun progress(telegram: TelegramApi): (String) -> Unit = { status: String ->
         try { telegram.progress(config.getLong("chat_id"), status) }
         catch (_: java.io.IOException) { /* A lost progress message must not interrupt a diary write. */ }
-    }
+    }.also { ui?.searchProgress = it }
     fun resumePhone(telegram: TelegramApi): List<String> {
         if (!hasPendingPhone()) return emptyList()
         val screen = requireNotNull(ui)
@@ -113,10 +118,11 @@ class AgentCommands(
         val brain = PcBrain(config, client, store)
         val batch = if (message.has("agent_batch")) message.objects("agent_batch") else listOf(message)
         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try {
-            CommandReply(brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }, progress = progress(telegram),
+            val submitted = brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }, progress = progress(telegram),
                 phoneReady = { screen.canExecute() && store.get("write_intent").isBlank() }, phoneSession = { screen.withExecutionScreen(it) }) { plan ->
                 CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
-            })
+            }
+            CommandReply(submitted, confirm = brain.lastConfirm)
         }
             catch (_: java.io.IOException) { CommandReply("Не получил результат ПК. Запрос мог сохраниться на ПК. Не отправляй ту же еду повторно; проверь /status.") }
         if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply(brain.jobStatus())
@@ -125,7 +131,7 @@ class AgentCommands(
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
                 "Записываю свою еду в твой FatSecret " + (if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "на эмуляторе ПК") + ". Claude работает по твоей подписке на ПК, платного API нет.\n\n" +
                     "1. Текст/голос с названием, весом и точными КБЖУ.\n2. Фото этикетки + голос, сколько съел.\n3. Фото блюда, с пояснением или без: КБЖУ будут оценены и помечены.\n4. Фото/цифры штрихкода + порция: проверю интернет-источник; если полного КБЖУ нет, не запишу.\n\n" +
-                    "Можно без /meal. Фото и голос объединяются в один запрос. Выбирать продукты из каталога и подтверждать каждую цифру не нужно.\n" +
+                    "Можно без /meal. Фото и голос объединяются в один запрос. Точные данные (цифры или этикетка и сколько съел) записываю сразу. Оценённый приём (фото без цифр) сначала покажу по позициям: нажми «✅ Записать» или поправь голосом/текстом.\n" +
                     "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\n" +
                     (if (config.optBoolean("pc_execute_on_phone")) "ПК должен работать. Во время распознавания экран можно выключить. Готовая еда дождётся разблокировки, затем запишется автоматически. На время ввода удержу экран сам, максимум 2 минуты. Управление Android Agent должно быть включено."
                     else "ПК и эмулятор должны работать; открывать FatSecret на телефоне не нужно. Второй способ - запись на этом телефоне, включается на вкладке ИИ.")
@@ -138,6 +144,7 @@ class AgentCommands(
             command == "/stop" || natural == "останови агента" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
             command == "/cancel" || natural in setOf("отмена", "отмени", "отмени черновик") -> {
                 store.put("pc_dialogue", "")
+                if (config.optBoolean("pc_consent")) brain.cancelDraft()
                 if (brain.hasPendingPhone()) CommandReply(brain.cancelPendingPhone().joinToString("\n\n"))
                 else CommandReply(meals.cancel())
             }

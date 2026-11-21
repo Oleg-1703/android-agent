@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit
 /** A fixed recipe for the observed FatSecret 11 UI. The model never supplies actions. */
 class FatUi(private val context: Context, private val beforeCustomCommit: () -> Unit = {}) : MealScreen, CustomMealScreen {
     private class FrameRangeMismatch : IllegalArgumentException("FatSecret не сообщил полные границы списка. Результат требует ручной проверки.")
+    var candidateResolver: ((org.json.JSONObject, List<Row>, Boolean) -> Int?)? = null
+    var searchProgress: ((String) -> Unit)? = null
     private var screenLease: ScreenLease? = null
     fun canExecute() = FatAccessibilityService.instance != null &&
         context.getSystemService(android.os.PowerManager::class.java).isInteractive &&
@@ -399,7 +401,8 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         }
         searchState = if (suggested) "suggestion" else "keyboard_search"
         if (!suggested) keyboardSearch(query)
-        waitFor { nodes("title_description").isNotEmpty() }
+        waitFor { nodes("title_description").isNotEmpty() || nodes("search_results_nomatch").isNotEmpty() }
+        if (main { nodes("title_description").isEmpty() }) return emptyList()
         searchState = "results"
         var previous = emptyList<Row>()
         var stableSince = SystemClock.elapsedRealtime()
@@ -696,94 +699,232 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         waitFor { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
         return setPortion(grams)
     }
-    override fun prepareExisting(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
-        val query = item.getString("query")
-        existingCandidates(meal, query)
-        onContext(searchContext())
-        fun list() = root().findAccessibilityNodeInfosByViewId("android:id/list")
-            .filter { it.isVisibleToUser && it.isEnabled }.single()
-        fun scroll(forward: Boolean): Boolean {
-            val sequence = FatAccessibilityService.instance?.resultScroll?.sequence ?: 0
-            val moved = main { list()
-                .performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) }
-            if (moved) {
-                SystemClock.sleep(450)
-                require((FatAccessibilityService.instance?.resultScroll?.sequence ?: 0) > sequence) { "Поиск не подтвердил границы выдачи. Ничего не записано." }
-            }
-            return moved
+    private fun searchList() = root().findAccessibilityNodeInfosByViewId("android:id/list")
+        .filter { it.isVisibleToUser && it.isEnabled }.single()
+    private fun scrollResults(forward: Boolean): Boolean {
+        val sequence = FatAccessibilityService.instance?.resultScroll?.sequence ?: 0
+        val moved = main { searchList()
+            .performAction(if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) }
+        if (moved) {
+            SystemClock.sleep(450)
+            require((FatAccessibilityService.instance?.resultScroll?.sequence ?: 0) > sequence) { "Поиск не подтвердил границы выдачи. Ничего не записано." }
         }
-        fun top() { repeat(60) { if (!scroll(false)) return }; error("Search is too long") }
-        fun frame(): Pair<Int, List<Row?>> = main {
-            val list = list()
-            val range = requireNotNull(FatAccessibilityService.instance?.resultScroll)
-            require(range.rootHash == list.hashCode() && range.window == list.windowId && range.from >= 0 &&
-                range.count in 1..300 && range.to < range.count && list.childCount == range.to - range.from + 1) {
-                "Не удалось полностью прочитать выдачу. Укажи точное название с размером и брендом. Ничего не записано."
-            }
-            val values = (0 until list.childCount).map { index ->
-                val row = requireNotNull(list.getChild(index))
-                fun field(id: String) = row.findAccessibilityNodeInfosByViewId(prefix + id).singleOrNull()?.text?.toString()?.trim()
-                if (row.viewIdResourceName == prefix + "multi_add_item_row") {
-                    val name = field("title_description")
-                    val detail = field("sub_title_portion_description")
-                    if (name.isNullOrBlank() || detail.isNullOrBlank()) null else Row(name, detail)
-                } else {
-                    if (listOf("search_results_next", "search_results_previous", "search_results_addcustom").any { field(it) != null }) Row("", "") else null
-                }
-            }
-            range.from to values
+        return moved
+    }
+    private fun resultsTop() { repeat(60) { if (!scrollResults(false)) return }; error("Search is too long") }
+    private fun resultFrame(): Pair<Int, List<Row?>> = main {
+        val list = searchList()
+        val range = requireNotNull(FatAccessibilityService.instance?.resultScroll)
+        require(range.rootHash == list.hashCode() && range.window == list.windowId && range.from >= 0 &&
+            range.count in 1..300 && range.to < range.count && list.childCount == range.to - range.from + 1) {
+            "Не удалось полностью прочитать выдачу. Укажи точное название с размером и брендом. Ничего не записано."
         }
-        fun readPage(): Map<Int, Row> {
-            if (scroll(true)) scroll(false) else if (scroll(false)) scroll(true)
-            top()
-            val all = sortedMapOf<Int, Row>()
-            var total = -1
-            for (viewport in 0 until 60) {
-                val (from, visible) = frame()
-                val count = requireNotNull(FatAccessibilityService.instance?.resultScroll).count
-                require(total == -1 || total == count)
-                total = count
-                visible.forEachIndexed { index, row ->
-                    if (row != null) {
-                        require(all[from + index] == null || all[from + index] == row) { "Выдача изменилась. Ничего не записано." }
-                        all[from + index] = row
-                    }
-                }
-                if (all.size == total || !scroll(true)) break
+        val values = (0 until list.childCount).map { index ->
+            val row = requireNotNull(list.getChild(index))
+            fun field(id: String) = row.findAccessibilityNodeInfosByViewId(prefix + id).singleOrNull()?.text?.toString()?.trim()
+            if (row.viewIdResourceName == prefix + "multi_add_item_row") {
+                val name = field("title_description")
+                val detail = field("sub_title_portion_description")
+                if (name.isNullOrBlank() || detail.isNullOrBlank()) null else Row(name, detail)
+            } else {
+                if (listOf("search_results_next", "search_results_previous", "search_results_addcustom").any { field(it) != null }) Row("", "") else null
             }
-            require(all.size == total && all.keys.first() == 0 && all.keys.last() == total - 1) { "Выдача прочитана не полностью. Ничего не записано." }
-            return all
         }
-        // FatSecret can return thousands of unrelated global products for one size word.
-        // Use its first ranked page, requiring every requested word and an unambiguous match.
-        val candidates = readPage().filterValues { it.name.isNotBlank() }.entries.toList()
-        val selected = candidates[ExistingFood.exactIndex(query, candidates.map { it.value })]
-        val index = selected.key
-        val expected = selected.value
-        top()
+        range.from to values
+    }
+    private fun readResultPage(): Map<Int, Row> {
+        if (scrollResults(true)) scrollResults(false) else if (scrollResults(false)) scrollResults(true)
+        resultsTop()
+        val all = sortedMapOf<Int, Row>()
+        var total = -1
         for (viewport in 0 until 60) {
-            val (from, visible) = frame()
+            val (from, visible) = resultFrame()
+            val count = requireNotNull(FatAccessibilityService.instance?.resultScroll).count
+            require(total == -1 || total == count)
+            total = count
+            visible.forEachIndexed { index, row ->
+                if (row != null) {
+                    require(all[from + index] == null || all[from + index] == row) { "Выдача изменилась. Ничего не записано." }
+                    all[from + index] = row
+                }
+            }
+            if (all.size == total || !scrollResults(true)) break
+        }
+        require(all.size == total && all.keys.first() == 0 && all.keys.last() == total - 1) { "Выдача прочитана не полностью. Ничего не записано." }
+        return all
+    }
+    private fun clickResult(index: Int, expected: Row) {
+        resultsTop()
+        for (viewport in 0 until 60) {
+            val (from, visible) = resultFrame()
             if (index in from until from + visible.size) {
                 if (visible[index - from] == null) {
-                    main { requireNotNull(list().getChild(index - from)).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id) }
+                    main { requireNotNull(searchList().getChild(index - from)).performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id) }
                     SystemClock.sleep(250)
                     continue
                 }
-                require(visible[index - from] == expected)
+                require(visible[index - from] == expected) { "Результат поиска изменился." }
                 main {
-                    val row = requireNotNull(list().getChild(index - from))
-                    require(row.findAccessibilityNodeInfosByViewId(prefix + "title_description").single().text.toString().trim() == expected.name)
+                    val row = requireNotNull(searchList().getChild(index - from))
+                    val title = row.findAccessibilityNodeInfosByViewId(prefix + "title_description").single()
+                    require(title.text.toString().trim() == expected.name)
                     require(row.findAccessibilityNodeInfosByViewId(prefix + "sub_title_portion_description").single().text.toString().trim() == expected.detail)
-                    row.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
-                    click(row)
+                    click(title)
                 }
-                waitFor { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
-                existingIdentity = expected.name
-                return setPortion(item.getString("grams"))
+                return
             }
-            if (!scroll(true)) break
+            if (!scrollResults(true)) break
         }
-        throw IllegalArgumentException("Точный продукт больше не виден. Ничего не записано.")
+        throw IllegalArgumentException("Выбранная еда больше не видна. Ничего не записано.")
+    }
+    override fun prepareExisting(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
+        existingIdentity = null
+        val queries = FoodSearch.queries(item)
+        val found = linkedMapOf<Row, String>()
+        var chosen: Pair<Row, String>? = null
+        for ((attempt, query) in queries.withIndex()) {
+            searchState = "search_attempt_${attempt + 1}"
+            searchProgress?.invoke("Ищу еду в FatSecret: $query")
+            if (existingCandidates(meal, query).isEmpty()) continue
+            onContext(searchContext())
+            val page = readResultPage().values.filter { it.name.isNotBlank() }
+            page.forEach { found.putIfAbsent(it, query) }
+            val matching = page.filter { FoodSearch.matches(item.getString("query"), it.name) }.distinct()
+            if (matching.size == 1) { chosen = matching.single() to query; break }
+        }
+        if (chosen == null && found.isNotEmpty()) {
+            searchProgress?.invoke("Сверяю найденные названия с твоим описанием через ИИ на ПК.")
+            val candidates = found.keys.take(80)
+            val index = candidateResolver?.invoke(item, candidates, false)
+            if (index != null) {
+                require(index in candidates.indices)
+                val row = candidates[index]
+                chosen = row to found.getValue(row)
+            }
+        }
+        requireNotNull(chosen) { "Проверил варианты поиска, подходящую еду однозначно не нашёл. Уточни название, бренд или размер; ничего не записано." }
+        val (expected, query) = chosen
+        existingCandidates(meal, query)
+        onContext(searchContext())
+        val selected = readResultPage().entries.singleOrNull { it.value == expected }
+            ?: throw IllegalArgumentException("Выбранная карточка изменилась или продублирована. Ничего не записано.")
+        clickResult(selected.key, expected)
+        waitFor { nodes("food_name_tv").size == 1 && nodes("fem_save_btn").size == 1 }
+        existingIdentity = expected.name
+        return setPortion(FoodSearch.grams(item, expected.detail))
+    }
+    private fun savedList(meal: String): Map<Int, Row> {
+        openMeal(meal)
+        for (attempt in 0 until 8) {
+            val opened = main {
+                val tabs = nodes("food_journal_add_indicator").single()
+                val matches = mutableListOf<AccessibilityNodeInfo>()
+                fun walk(node: AccessibilityNodeInfo) {
+                    if (node.isVisibleToUser && node.text?.toString()?.trim()?.lowercase() in setOf("saved meals", "сохраненная еда", "сохранённая еда")) matches += node
+                    for (index in 0 until node.childCount) node.getChild(index)?.let(::walk)
+                }
+                walk(tabs)
+                require(matches.size <= 1)
+                if (matches.size == 1) { click(matches.single()); true }
+                else { require(tabs.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) { "Не найдена вкладка сохранённой еды." }; false }
+            }
+            if (opened) {
+                waitFor { nodes("title_description").isNotEmpty() }
+                return readResultPage().filterValues { it.name.isNotBlank() }
+            }
+            SystemClock.sleep(200)
+        }
+        throw IllegalArgumentException("Не найдена вкладка сохранённой еды.")
+    }
+    private fun inspectSaved(index: Int, row: Row, meal: String): SavedMealDraft {
+        clickResult(index, row)
+        waitFor { nodes("recipe_header_tv").size == 1 && nodes("saved_meal_contents_recycler_view").size == 1 }
+        val ingredients = main {
+            val root = root()
+            val indicator = nodes("recipes_indicator").single()
+            val captions = mutableListOf<String>()
+            fun labels(node: AccessibilityNodeInfo) {
+                node.text?.toString()?.let { captions += it }
+                for (i in 0 until node.childCount) node.getChild(i)?.let(::labels)
+            }
+            labels(indicator)
+            val count = captions.mapNotNull { Regex("^([0-9]+)\\s+(?:items?|шт)$", RegexOption.IGNORE_CASE).find(it.trim())?.groupValues?.get(1)?.toInt() }.single()
+            require(count in 1..20)
+            val list = nodes("saved_meal_contents_recycler_view").single()
+            require(list.childCount == count) { "Не удалось прочитать полный состав сохранённой еды." }
+            (0 until list.childCount).map { position ->
+                val child = requireNotNull(list.getChild(position))
+                val name = child.findAccessibilityNodeInfosByViewId(prefix + "item_name_tv").single().text.toString().trim()
+                val portion = child.findAccessibilityNodeInfosByViewId(prefix + "portion_desc_tv").single().text.toString().trim()
+                SavedIngredient(name, FoodSearch.grams(org.json.JSONObject(), portion), portion)
+            }
+        }
+        main {
+            val tabs = nodes("recipes_indicator").single()
+            val found = mutableListOf<AccessibilityNodeInfo>()
+            fun walk(node: AccessibilityNodeInfo) {
+                if (node.text?.toString()?.lowercase() in setOf("diary", "дневник")) found += node
+                for (i in 0 until node.childCount) node.getChild(i)?.let(::walk)
+            }
+            walk(tabs); require(found.size == 1); click(found.single())
+        }
+        waitFor { nodes("fem_save_btn").size == 1 && nodes("calories_tv").size == 1 }
+        return main {
+            require(text("recipe_header_tv").single().trim() == row.name.trim())
+            require(text("meal_type_tv").single().lowercase() in labels(meal)) { "В сохранённой еде выбран другой приём пищи." }
+            require(text("fem_title").single().lowercase() in setOf("add to my diary", "добавить в мой дневник"))
+            fun number(id: String) = Regex("[0-9]+(?:[.,][0-9]+)?").find(text(id).single())!!.value.replace(',', '.')
+            SavedMealDraft(row.name.trim(), ingredients, number("calories_tv"), number("protein_tv"), number("fat_tv"), number("carbohydrates_tv"))
+        }
+    }
+    override fun prepareSaved(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): SavedMealDraft {
+        existingIdentity = null
+        customCommitStarted = false
+        require(!item.has("grams") && item.optString("count", "1").toBigDecimal().compareTo(java.math.BigDecimal.ONE) == 0 && item.optString("unit", "servings") == "servings") {
+            "Для изменённой порции сохранённого приёма укажи продукты и количество отдельно. Ничего не записано."
+        }
+        searchProgress?.invoke("Проверяю сохранённую еду FatSecret и её состав.")
+        val rows = savedList(meal)
+        onContext(searchContext())
+        val matching = rows.entries.filter { entry -> FoodSearch.queries(item).any { FoodSearch.matches(it, entry.value.name) } }
+        val selected = if (matching.isNotEmpty()) matching.first() else {
+            val candidates = rows.entries.take(80)
+            val choice = candidateResolver?.invoke(item, candidates.map { it.value }, true)
+            requireNotNull(choice) { "Подходящая сохранённая еда не найдена. Уточни её название или состав." }
+            require(choice in candidates.indices)
+            candidates[choice]
+        }
+        val duplicates = rows.entries.filter { FoodSearch.words(it.value.name) == FoodSearch.words(selected.value.name) }
+        require(duplicates.size <= 4) { "Слишком много разных сохранённых вариантов с одним названием." }
+        var expected: SavedMealDraft? = null
+        for (duplicate in duplicates) {
+            val currentRows = savedList(meal)
+            require(currentRows[duplicate.key] == duplicate.value) { "Сохранённая еда изменилась." }
+            val draft = inspectSaved(duplicate.key, duplicate.value, meal)
+            if (expected != null) require(draft.copy(name = "") == expected.copy(name = "")) { "С одним названием сохранены разные блюда. Уточни состав или КБЖУ нужного варианта." }
+            expected = draft
+            cancelExistingDraft()
+        }
+        val currentRows = savedList(meal)
+        require(currentRows[selected.key] == selected.value)
+        val draft = inspectSaved(selected.key, selected.value, meal)
+        require(draft.copy(name = "") == requireNotNull(expected).copy(name = ""))
+        searchState = "saved_meal_ready"
+        beforeCustomCommit()
+        return draft
+    }
+    override fun saveSaved(draft: SavedMealDraft, meal: String, stamp: String) {
+        main {
+            require(requireNotNull(FatAccessibilityService.instance).screenStamp == stamp)
+            require(text("recipe_header_tv").single().trim() == draft.name)
+            require(text("meal_type_tv").single().lowercase() in labels(meal))
+            require(text("fem_title").single().lowercase() in setOf("add to my diary", "добавить в мой дневник"))
+            customCommitStarted = true
+            searchState = "saved_meal_save"
+            click(nodes("fem_save_btn").single())
+        }
+        SystemClock.sleep(500)
+        diary(allowDraft = true)
     }
     override fun cancelExistingDraft() { diary(allowDraft = true) }
     private fun setPortion(grams: String, expectedName: String? = null): String {

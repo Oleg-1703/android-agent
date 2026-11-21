@@ -8,7 +8,7 @@ import java.math.RoundingMode
 object WholeMeal {
     fun items(plan: JSONObject): List<JSONObject> {
         val items = plan.objects("items")
-        val custom = items.filter { it.optString("source") != "existing" }
+        val custom = items.filter { it.optString("source") !in setOf("existing", "saved") }
         if (custom.size < 2) return items
         val grams = custom.sumOf { it.getString("grams").toBigDecimal() }
         require(grams > BigDecimal.ZERO && grams <= BigDecimal("5000")) { "Общий вес приёма пищи должен быть не больше 5000 г." }
@@ -35,12 +35,12 @@ object WholeMeal {
         MealNutrition.validate(combined)
         var inserted = false
         return items.mapNotNull {
-            if (it.optString("source") == "existing") it
+            if (it.optString("source") in setOf("existing", "saved")) it
             else if (!inserted) { inserted = true; combined } else null
         }
     }
     fun composition(plan: JSONObject): String {
-        val custom = plan.objects("items").filter { it.optString("source") != "existing" }
+        val custom = plan.objects("items").filter { it.optString("source") !in setOf("existing", "saved") }
         return if (custom.size < 2) "" else "Состав: " + custom.joinToString(", ") { "${it.getString("query")} ${it.getString("grams")} г" }
     }
 }

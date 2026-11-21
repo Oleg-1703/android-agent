@@ -18,8 +18,18 @@ object Meals {
         for (i in 0 until items.length()) {
             val item = items.getJSONObject(i)
             require(item.getString("query").trim().length in 2..150) { "Укажи продукт и способ приготовления" }
-            val grams = requireNotNull(item.getString("grams").toBigDecimalOrNull()) { "Укажи вес числом в граммах, например 150 или 150,5" }
-            require(grams > BigDecimal.ZERO && grams <= BigDecimal("5000")) { "Вес должен быть больше 0 и не больше 5000 г" }
+            if (item.optString("source") in setOf("existing", "saved") && item.optString("grams").isBlank()) {
+                val count = requireNotNull(item.optString("count", "1").toBigDecimalOrNull())
+                require(count > BigDecimal.ZERO && count <= BigDecimal("100"))
+                require(item.optString("unit", "servings") in setOf("servings", "pieces"))
+            } else {
+                val grams = requireNotNull(item.getString("grams").toBigDecimalOrNull()) { "Укажи вес числом в граммах, например 150 или 150,5" }
+                require(grams > BigDecimal.ZERO && grams <= BigDecimal("5000")) { "Вес должен быть больше 0 и не больше 5000 г" }
+            }
+            item.optJSONArray("search_queries")?.let { queries ->
+                require(queries.length() <= 5)
+                for (index in 0 until queries.length()) require(queries.getString(index).length in 2..150)
+            }
         }
         return json
     }

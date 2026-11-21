@@ -34,13 +34,18 @@ class TelegramApi(private val token: String, private val client: OkHttpClient, p
     fun updates(offset: Long, timeout: Int = 45): List<JSONObject> = call("getUpdates", mapOf(
         "offset" to offset.toString(), "timeout" to timeout.coerceIn(0, 45).toString(), "limit" to "20", "allowed_updates" to "[\"message\"]"
     )).objects("result")
-    fun send(chat: Long, text: String) {
+    fun send(chat: Long, text: String, confirm: Boolean = false) {
         text.chunked(3500).forEach { chunk ->
-            val keyboard = JSONObject().put("keyboard", JSONArray()
-                .put(JSONArray().put("Сегодня").put("Статус"))
-                .put(JSONArray().put("Помощь").put("Отмена")))
-                .put("resize_keyboard", true).put("input_field_placeholder", "Команда или описание еды")
-            call("sendMessage", mapOf("chat_id" to chat.toString(), "text" to chunk, "reply_markup" to keyboard.toString()))
+            call("sendMessage", mapOf("chat_id" to chat.toString(), "text" to chunk, "reply_markup" to keyboard(confirm).toString()))
+        }
+    }
+    companion object {
+        const val CONFIRM_BUTTON = "✅ Записать"
+        fun keyboard(confirm: Boolean = false): JSONObject {
+            val rows = JSONArray()
+            if (confirm) rows.put(JSONArray().put(CONFIRM_BUTTON))
+            rows.put(JSONArray().put("Сегодня").put("Статус")).put(JSONArray().put("Помощь").put("Отмена"))
+            return JSONObject().put("keyboard", rows).put("resize_keyboard", true).put("input_field_placeholder", "Команда или описание еды")
         }
     }
     fun download(fileId: String, declaredSize: Long, maxBytes: Long): ByteArray {

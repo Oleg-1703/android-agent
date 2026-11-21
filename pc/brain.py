@@ -28,6 +28,7 @@ SCHEMA = {
         "items": {"type": "array", "maxItems": 10, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {"query": {"type": "string"}, "grams": {"type": "string"},
+                "grams_source": {"type": "string", "enum": ["stated", "estimate"]},
                 "source": {"type": "string", "enum": ["user", "label", "estimate", "barcode", "existing", "saved"]},
                 "search_queries": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 2, "maxLength": 150}},
                 "count": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
@@ -112,7 +113,77 @@ that request_text with the answer and use action='log'. For a question about ear
 requests or the bot, set action='answer' and reply in Russian from recent_requests data only,
 items=[]. Never claim a diary write yourself. Reject
 non-food requests with a short Russian explanation, never invent a food.
+For every item set grams_source='stated' only when the user, the voice or a label explicitly gives the
+eaten amount (or says the whole package was eaten and its net weight is printed); otherwise grams_source=
+'estimate' (typical portion, photo guess). Estimated meals are shown to the user before writing.
+When the newest recent request has awaiting_confirmation=true it is a draft shown to the user, and
+draft_items/meal describe it. If the user corrects it ('мяса было меньше'), set action='log' and return the
+FULL corrected meal: every draft item with the corrections applied, unchanged items copied exactly (query,
+nutrition, grams, meal; an item with source='web' is returned as source='estimate', the server restores its
+facts). Items whose amount the user now states get grams_source='stated'; nutrition the user states gets
+source='user'. Do not drop items the user did not mention.
 """
+
+CONFIRM_WORDS = {"ок", "окей", "ok", "okay", "да", "записать", "записывай", "запиши", "верно", "подтверждаю",
+                 "всё верно", "все верно"}
+CONFIRM_MINUTES = 120
+VOICE_PLACEHOLDER = "Разбери присланные фото"
+
+
+def normalize_reply(text):
+    """Lowercase, letters and digits only, single spaces: '✅ Записать!' -> 'записать'."""
+    return " ".join("".join(c if c.isalnum() else " " for c in str(text).lower()).split())
+
+
+def is_confirm_word(text):
+    return normalize_reply(text) in CONFIRM_WORDS
+
+
+def needs_confirmation(plan):
+    """True when any own-food item still rests on an estimate after enrich; a missing grams_source counts as estimate."""
+    return any(item.get("source") not in {"existing", "saved"} and
+               (item.get("source") == "estimate" or item.get("grams_source") != "stated")
+               for item in plan.get("items", []))
+
+
+def reuse_web_facts(plan, draft):
+    """Unchanged items of a corrected draft keep their web-verified facts instead of a new search."""
+    known = {normalize_reply(row.get("query", "")): row for row in draft.get("items", [])
+             if row.get("source") == "web" and row.get("nutrition")}
+    for item in plan["items"]:
+        old = known.get(normalize_reply(item.get("query", "")))
+        if old and item.get("source") == "estimate" and not item.get("barcode"):
+            item["source"], item["nutrition"] = "web", json.loads(json.dumps(old["nutrition"]))
+            if old.get("source_url"):
+                item["source_url"] = old["source_url"]
+
+
+_CATALOG_START, _CATALOG_END = "For restaurant-menu dishes", "User statements override all defaults."
+NO_CATALOG_RULES = """Restaurant-menu dishes, branded or packaged items without supplied macros and every named dish are
+estimated per component: source=estimate with grams and your best-guess nutrition (exact product name with variant
+and size for branded items; the server replaces it with verified web facts, do not mention this in notes),
+grams_source=estimate unless the user states the amount. Never use source=existing or source=saved, never omit grams
+and nutrition. Keep separately specified quantities as separate items. """
+
+
+def build_schema(catalog):
+    schema = json.loads(json.dumps(SCHEMA))
+    if not catalog:
+        enum = schema["properties"]["items"]["items"]["properties"]["source"]["enum"]
+        enum[:] = [value for value in enum if value not in {"existing", "saved"}]
+    return schema
+
+
+def build_system(catalog):
+    if catalog:
+        return SYSTEM
+    start, end = SYSTEM.index(_CATALOG_START), SYSTEM.index(_CATALOG_END)
+    return SYSTEM[:start] + NO_CATALOG_RULES + SYSTEM[end:]
+
+
+def catalog_item_without_grams(plan):
+    return any(item.get("source") in {"existing", "saved"} and not item.get("grams") for item in plan.get("items", []))
+
 
 class SubscriptionLimit(RuntimeError):
     def __init__(self, reset=""):
@@ -303,21 +374,39 @@ nutrition or quantities; the executor reads them from the selected card.'''
             text = (text + "\nОписание голосом: " + transcript)[:4000]
         self.jobs.remember(key, text)
         recent = self.jobs.recent(key)
-        context = {"recent_requests": [{"ref": number, "minutes_ago": row["minutes_ago"], "state": row["state"],
-                                        "request_text": row["text"][:600], "result_message": row["message"],
-                                        "retry_possible": row["can_retry"]} for number, row in enumerate(recent, 1)]} if recent else None
-        with self.busy:
-            try:
-                plan = parse_meal(text, payload["date"], self.cli, self.cwd, context=context,
-                    images=[{"type": "base64", "media_type": value["media_type"], "data": value["data"]} for value in images])
-            except SubscriptionLimit as error:
-                raise ValueError("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else "")) from None
-            except (RuntimeError, subprocess.TimeoutExpired, OSError):
-                raise ValueError("ИИ по подписке сейчас недоступен. Ничего не записано; платный API не подключался.") from None
-        action = plan.get("action", "log") if recent else "log"
+        catalog = bool(getattr(self, "config", {}).get("phone_catalog", False))
+        draft = recent[0] if recent and recent[0]["awaiting"] and recent[0]["minutes_ago"] <= CONFIRM_MINUTES else None
+        spoken = payload["text"] if not voice else (transcript if payload["text"].startswith(VOICE_PLACEHOLDER) else payload["text"] + " " + transcript)
+        if draft and not images and is_confirm_word(spoken):
+            plan = json.loads(json.dumps(draft["plan"]))
+            if plan["date"] != payload["date"]:
+                raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
+            text = draft["text"]
+            action = "confirmed"
+        else:
+            context = {"recent_requests": [{"ref": number, "minutes_ago": row["minutes_ago"], "state": row["state"],
+                                            "request_text": row["text"][:600], "result_message": row["message"],
+                                            "retry_possible": row["can_retry"],
+                                            "awaiting_confirmation": row is draft,
+                                            **({"meal": row["plan"]["meal"], "draft_items": [
+                                                {"query": it.get("query"), "grams": it.get("grams"), "grams_source": it.get("grams_source"),
+                                                 "source": it.get("source"), "nutrition": it.get("nutrition")} for it in row["plan"]["items"]]}
+                                               if row is draft else {})} for number, row in enumerate(recent, 1)]} if recent else None
+            with self.busy:
+                try:
+                    plan = parse_meal(text, payload["date"], self.cli, self.cwd, context=context,
+                        schema=build_schema(catalog), system=build_system(catalog),
+                        images=[{"type": "base64", "media_type": value["media_type"], "data": value["data"]} for value in images])
+                except SubscriptionLimit as error:
+                    raise ValueError("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else "")) from None
+                except (RuntimeError, subprocess.TimeoutExpired, OSError):
+                    raise ValueError("ИИ по подписке сейчас недоступен. Ничего не записано; платный API не подключался.") from None
+            action = plan.get("action", "log") if recent else "log"
         if action == "answer" and plan.get("reply"):
             return {"status": "failed", "reply": True, "message": plan["reply"]}
-        if action == "retry":
+        if action == "confirmed":
+            pass
+        elif action == "retry":
             plan = self.retry_plan(recent, plan.get("ref"), payload["date"])
             if "status" in plan:
                 return plan
@@ -326,12 +415,22 @@ nutrition or quantities; the executor reads them from the selected card.'''
         elif plan.get("question"):
             return {"status": "failed", "reply": True, "message": str(plan["question"])[:500]}
         else:
+            if not catalog and catalog_item_without_grams(plan):
+                return {"status": "failed", "reply": True,
+                        "message": "Не могу записать блюдо без веса. Напиши, сколько граммов ты съел, или поправь состав."}
             validate_plan(plan)
             if plan["date"] != payload["date"]:
                 raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
+            if draft:
+                reuse_web_facts(plan, draft["plan"])
             with self.busy:
                 enrich(plan, text, self.web_search)
             plan["notes"] = (table(plan) + "\n\n" + str(plan.get("notes", ""))).strip()
+            if needs_confirmation(plan):
+                plan["_execution_id"] = key
+                self.jobs.remember(key, text, plan)
+                return {"status": "failed", "reply": True, "confirm": True,
+                        "message": plan["notes"] + "\n\nЗаписать так? Нажми «✅ Записать» или скажи/напиши, что поправить."}
         plan["_execution_id"] = key
         self.jobs.remember(key, text, plan)
         if payload.get('target') == 'phone':
@@ -353,6 +452,10 @@ nutrition or quantities; the executor reads them from the selected card.'''
             return reply("Этот приём уже записан в FatSecret, повторять не буду, чтобы не было дубля. Нужна ещё одна такая же запись - напиши явно.")
         if row["state"] in {"queued", "running", "prepared", "executing"}:
             return reply("Этот запрос ещё выполняется. Дождись результата, повторять не нужно.")
+        if row.get("awaiting"):
+            if ref == 1 and row["minutes_ago"] <= CONFIRM_MINUTES:
+                return reply("Этот приём в дневник не записан: он ждёт подтверждения. Нажми «✅ Записать» или напиши, что поправить.")
+            return reply("Этот черновик в дневник не записан и уже не ждёт подтверждения. Опиши еду заново или пришли фото ещё раз.")
         if not row["can_retry"]:
             return reply("Тот запрос мог частично записаться, или плана у меня нет. Автоматически не повторяю: проверь дневник FatSecret и опиши, что добавить.")
         plan = json.loads(json.dumps(row["plan"]))
@@ -393,6 +496,9 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(30)
         if not self.authorized():
             self.respond(401, {"error": "unauthorized"})
+            return
+        if self.path == "/v1/drafts/cancel":
+            self.respond(200, {"cancelled": self.server.jobs.cancel_draft()})
             return
         phone_receipt = re.fullmatch(r'/v1/jobs/([a-f0-9]{32,64})/(claim|receipt)', self.path)
         if phone_receipt:

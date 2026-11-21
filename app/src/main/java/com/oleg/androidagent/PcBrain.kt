@@ -16,8 +16,28 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         return PhonePlanQueue(requireNotNull(store), scope)
     }
     fun hasPendingPhone() = config.optBoolean("pc_execute_on_phone") && plans().pending()
+    fun resolveFood(item: JSONObject, rows: List<FatUi.Row>, saved: Boolean): Int? {
+        require(rows.size in 1..80)
+        val body = JSONObject().put("intent", item).put("saved", saved).put("candidates", org.json.JSONArray(rows.map {
+            JSONObject().put("name", it.name).put("detail", it.detail)
+        }))
+        val request = jobRequest("v1/resolve-food").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        val resolver = client.newBuilder().callTimeout(35, java.util.concurrent.TimeUnit.SECONDS).build()
+        val index = JSONObject(Http.text(resolver, request, 2000)).getInt("index")
+        require(index == -1 || index in rows.indices)
+        return index.takeIf { it >= 0 }
+    }
     fun resumePhone(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<String> =
         plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map(::receipt)
+    /** Best effort: a cancelled estimated draft must not be confirmable by a later "ок". Never breaks the local cancel. */
+    fun cancelDraft() {
+        try {
+            val request = jobRequest("v1/drafts/cancel").post("{}".toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            Http.text(client.newBuilder().callTimeout(5, java.util.concurrent.TimeUnit.SECONDS).build(), request, 2000)
+        } catch (_: java.io.IOException) {
+        } catch (_: IllegalArgumentException) {
+        }
+    }
     fun cancelPendingPhone(): List<String> = plans().drain({ true }) { id, prepared ->
         phoneRunner { error("Cancel never executes") }.cancel(id, prepared)
     }.map(::receipt)
@@ -96,6 +116,9 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         return Request.Builder().url(endpoint(config.optString("pc_url")).newBuilder().addPathSegments(path).build())
             .header("Authorization", "Bearer $token")
     }
+    /** True when the last PC result is an estimated meal shown for confirmation; the reply then gets the "Записать" button. */
+    @Volatile var lastConfirm = false
+        private set
     fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, phoneReady: () -> Boolean = { true }, phoneSession: (() -> JSONObject) -> JSONObject = { it() }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
         require(messages.size in 1..10)
         val payload = JSONObject().put("date", LocalDate.now().toString())
@@ -133,6 +156,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
         store?.put("pc_last_job", id)
         val response = JSONObject(Http.text(client, request, 16000))
         fun finish(result: JSONObject): String {
+            lastConfirm = result.optString("status") == "failed" && result.optBoolean("confirm")
             if (phone && result.optString("status") in setOf("prepared", "complete", "executing")) {
                 require(result.optString("target") == "phone") { "ПК вернул результат другого исполнителя. Автоматически на эмулятор не переключаюсь." }
             }
