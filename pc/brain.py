@@ -18,7 +18,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from meal_jobs import MealJobs, Emulator, validate_plan
-from nutrition import enrich, table
+from nutrition import enrich, table, table_rows
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -122,11 +122,21 @@ FULL corrected meal: every draft item with the corrections applied, unchanged it
 nutrition, grams, meal; an item with source='web' is returned as source='estimate', the server restores its
 facts). Items whose amount the user now states get grams_source='stated'; nutrition the user states gets
 source='user'. Do not drop items the user did not mention.
+Telegram cannot send photos and a voice note together, so they arrive as separate requests. A voice/text that
+follows a draft and only adds context (meal type, eaten amount, the basis printed on a label, 'это на обед')
+is a CORRECTION of that draft: action='log', the full draft with the new facts applied. When that message
+states the eaten amount of a label item, set grams_source='stated' on it (so an exact plan needs no second
+confirmation). If the user announces that photos or a voice note are still to come ('сейчас скину фото',
+'ща пришлю голосовое') and the request has not enough food information yet, set action='answer', items=[]
+and reply with a short 'Жду фото.' / 'Жду голосовое.'. When the newest recent request has
+awaiting_more_input=true (such an announcement, at most 10 minutes old), the new request (usually photos) is its
+continuation: combine its request_text with the new text/images into ONE meal, action='log'.
 """
 
 CONFIRM_WORDS = {"ок", "окей", "ok", "okay", "да", "записать", "записывай", "запиши", "верно", "подтверждаю",
                  "всё верно", "все верно"}
 CONFIRM_MINUTES = 120
+MORE_INPUT_MINUTES = 10
 VOICE_PLACEHOLDER = "Разбери присланные фото"
 
 
@@ -376,6 +386,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
         recent = self.jobs.recent(key)
         catalog = bool(getattr(self, "config", {}).get("phone_catalog", False))
         draft = recent[0] if recent and recent[0]["awaiting"] and recent[0]["minutes_ago"] <= CONFIRM_MINUTES else None
+        more = recent[0] if recent and recent[0]["replied"] and not recent[0]["plan"] and recent[0]["minutes_ago"] <= MORE_INPUT_MINUTES else None
         spoken = payload["text"] if not voice else (transcript if payload["text"].startswith(VOICE_PLACEHOLDER) else payload["text"] + " " + transcript)
         if draft and not images and is_confirm_word(spoken):
             plan = json.loads(json.dumps(draft["plan"]))
@@ -388,6 +399,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
                                             "request_text": row["text"][:600], "result_message": row["message"],
                                             "retry_possible": row["can_retry"],
                                             "awaiting_confirmation": row is draft,
+                                            "awaiting_more_input": row is more,
                                             **({"meal": row["plan"]["meal"], "draft_items": [
                                                 {"query": it.get("query"), "grams": it.get("grams"), "grams_source": it.get("grams_source"),
                                                  "source": it.get("source"), "nutrition": it.get("nutrition")} for it in row["plan"]["items"]]}
@@ -401,7 +413,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
                     raise ValueError("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else "")) from None
                 except (RuntimeError, subprocess.TimeoutExpired, OSError):
                     raise ValueError("ИИ по подписке сейчас недоступен. Ничего не записано; платный API не подключался.") from None
-            action = plan.get("action", "log") if recent else "log"
+            action = plan.get("action", "log") if recent or plan.get("action") == "answer" else "log"
         if action == "answer" and plan.get("reply"):
             return {"status": "failed", "reply": True, "message": plan["reply"]}
         if action == "confirmed":
@@ -425,10 +437,18 @@ nutrition or quantities; the executor reads them from the selected card.'''
                 reuse_web_facts(plan, draft["plan"])
             with self.busy:
                 enrich(plan, text, self.web_search)
-            plan["notes"] = (table(plan) + "\n\n" + str(plan.get("notes", ""))).strip()
+            rich = "rich_table" in (payload.get("capabilities") or [])
+            if rich:
+                plan["table"] = table_rows(plan)
+                plan["notes"] = str(plan.get("notes", "")).strip()
+            else:
+                plan["notes"] = (table(plan) + "\n\n" + str(plan.get("notes", ""))).strip()
             if needs_confirmation(plan):
                 plan["_execution_id"] = key
                 self.jobs.remember(key, text, plan)
+                if rich:
+                    return {"status": "failed", "reply": True, "confirm": True, "table": plan["table"], "meal": plan["meal"],
+                            "message": plan["notes"]}
                 return {"status": "failed", "reply": True, "confirm": True,
                         "message": plan["notes"] + "\n\nЗаписать так? Нажми «✅ Записать» или скажи/напиши, что поправить."}
         plan["_execution_id"] = key
@@ -439,6 +459,8 @@ nutrition or quantities; the executor reads them from the selected card.'''
         if not result.get("notes"):
             result["notes"] = str(plan.get("notes", ""))[:600]
         result["sources"] = [item.get("source_url", "") for item in plan["items"] if item.get("source_url")]
+        if plan.get("table"):
+            result["table"], result["meal"] = plan["table"], plan["meal"]
         return result
 
     @staticmethod
@@ -535,6 +557,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError()
                 dt.date.fromisoformat(body["date"])
                 if body.get('target', 'emulator') not in {'phone', 'emulator'}:
+                    raise ValueError()
+                capabilities = body.get("capabilities", [])
+                if not isinstance(capabilities, list) or len(capabilities) > 8 or not all(isinstance(c, str) and len(c) <= 32 for c in capabilities):
                     raise ValueError()
                 images = body.get("images", [])
                 if not isinstance(images, list) or len(images) > 4:

@@ -10,29 +10,42 @@ import java.net.URLDecoder
 class ConfirmKeyboardTest {
     private val token = "123456:" + "x".repeat(30)
 
-    private fun keyboardOf(confirm: Boolean): List<List<String>> {
+    private fun sent(confirm: Boolean, parseMode: String? = null): Map<String, String> {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("{\"ok\":true,\"result\":{}}"))
             server.start()
             val client = Http.client().newBuilder().addInterceptor { chain ->
                 chain.proceed(chain.request().newBuilder().url(server.url(chain.request().url.encodedPath)).build())
             }.build()
-            TelegramApi(token, client).send(1, "Расчёт", confirm)
-            val fields = server.takeRequest().body.readUtf8().split('&').associate { part ->
+            TelegramApi(token, client).send(1, "Расчёт", confirm, parseMode)
+            return server.takeRequest().body.readUtf8().split('&').associate { part ->
                 val pair = part.split('=', limit = 2)
                 URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair[1], "UTF-8")
             }
-            val rows = JSONObject(fields.getValue("reply_markup")).getJSONArray("keyboard")
-            return (0 until rows.length()).map { row -> (0 until rows.getJSONArray(row).length()).map { rows.getJSONArray(row).getString(it) } }
         }
     }
 
-    @Test fun confirmReplyPutsTheWriteButtonFirst() {
-        assertEquals(listOf(listOf("✅ Записать"), listOf("Сегодня", "Статус"), listOf("Помощь", "Отмена")), keyboardOf(true))
+    @Test fun confirmReplyCarriesInlineButtonsNotAReplyKeyboardRow() {
+        val markup = JSONObject(sent(true).getValue("reply_markup"))
+        assertFalse(markup.has("keyboard"))
+        val rows = markup.getJSONArray("inline_keyboard")
+        assertEquals(2, rows.length())
+        assertEquals("✅ Записать", rows.getJSONArray(0).getJSONObject(0).getString("text"))
+        assertEquals("meal:confirm", rows.getJSONArray(0).getJSONObject(0).getString("callback_data"))
+        assertEquals("❌ Отменить", rows.getJSONArray(1).getJSONObject(0).getString("text"))
+        assertEquals("meal:cancel", rows.getJSONArray(1).getJSONObject(0).getString("callback_data"))
     }
 
-    @Test fun ordinaryReplyKeepsTheUsualKeyboard() {
-        assertEquals(listOf(listOf("Сегодня", "Статус"), listOf("Помощь", "Отмена")), keyboardOf(false))
+    @Test fun ordinaryReplyKeepsTheUsualKeyboardAndPlainText() {
+        val fields = sent(false)
+        val rows = JSONObject(fields.getValue("reply_markup")).getJSONArray("keyboard")
+        assertEquals(2, rows.length())
+        assertEquals("Сегодня", rows.getJSONArray(0).getString(0))
+        assertFalse(fields.containsKey("parse_mode"))
+    }
+
+    @Test fun htmlParseModeIsOptIn() {
+        assertEquals("HTML", sent(true, "HTML").getValue("parse_mode"))
     }
 
     private val config = JSONObject().put("pc_url", "https://pc.example.invalid/")

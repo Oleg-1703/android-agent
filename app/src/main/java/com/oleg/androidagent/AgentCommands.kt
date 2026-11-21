@@ -5,7 +5,13 @@ import org.json.JSONObject
 import java.time.LocalDate
 import java.util.Locale
 
-data class CommandReply(val text: String, val stop: Boolean = false, val confirm: Boolean = false)
+data class CommandReply(val text: String, val stop: Boolean = false, val confirm: Boolean = false, val html: Boolean = false) {
+    companion object {
+        /** Wraps a PcBrain string: HTML-marked text is sent with parse_mode HTML, anything else stays plain. */
+        fun of(text: String, confirm: Boolean = false) =
+            if (MealTable.isMarked(text)) CommandReply(MealTable.unmark(text), confirm = confirm, html = true) else CommandReply(text, confirm = confirm)
+    }
+}
 
 class AgentCommands(
     private val store: StateStore,
@@ -24,13 +30,13 @@ class AgentCommands(
         try { telegram.progress(config.getLong("chat_id"), status) }
         catch (_: java.io.IOException) { /* A lost progress message must not interrupt a diary write. */ }
     }.also { ui?.searchProgress = it }
-    fun resumePhone(telegram: TelegramApi): List<String> {
+    fun resumePhone(telegram: TelegramApi): List<CommandReply> {
         if (!hasPendingPhone()) return emptyList()
         val screen = requireNotNull(ui)
         return PcBrain(config, client, store).resumePhone({ screen.canExecute() && store.get("write_intent").isBlank() },
             { screen.searchState + " " + screen.diaryRangeState }, { screen.withExecutionScreen(it) }) { plan ->
             CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
-        }
+        }.map { CommandReply.of(it) }
     }
     private val engine = MealEngine(store, diary)
     private val apiConnected: Boolean get() = config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()
@@ -122,10 +128,12 @@ class AgentCommands(
                 phoneReady = { screen.canExecute() && store.get("write_intent").isBlank() }, phoneSession = { screen.withExecutionScreen(it) }) { plan ->
                 CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
             }
-            CommandReply(submitted, confirm = brain.lastConfirm)
+            // Any meal answer that is not a new draft (receipt, question, "ок") retires the buttons of the previous draft.
+            if (!brain.lastConfirm) store.put("confirm_msg", "")
+            CommandReply.of(submitted, brain.lastConfirm)
         }
             catch (_: java.io.IOException) { CommandReply("Не получил результат ПК. Запрос мог сохраниться на ПК. Не отправляй ту же еду повторно; проверь /status.") }
-        if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply(brain.jobStatus())
+        if (config.optBoolean("pc_consent") && (command == "/status" || natural == "статус")) return CommandReply.of(brain.jobStatus())
         val meals = UiMealEngine(store, screen)
         return when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> CommandReply(
@@ -144,6 +152,7 @@ class AgentCommands(
             command == "/stop" || natural == "останови агента" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
             command == "/cancel" || natural in setOf("отмена", "отмени", "отмени черновик") -> {
                 store.put("pc_dialogue", "")
+                store.put("confirm_msg", "")
                 if (config.optBoolean("pc_consent")) brain.cancelDraft()
                 if (brain.hasPendingPhone()) CommandReply(brain.cancelPendingPhone().joinToString("\n\n"))
                 else CommandReply(meals.cancel())

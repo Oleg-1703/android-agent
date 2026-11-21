@@ -47,7 +47,7 @@ class TelegramTest {
             }
             assertEquals("42", fields["offset"])
             assertEquals("0", fields["timeout"])
-            assertEquals("[\"message\"]", fields["allowed_updates"])
+            assertEquals("[\"message\",\"callback_query\"]", fields["allowed_updates"])
             assertEquals(3, server.requestCount)
         }
     }

@@ -54,6 +54,7 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
                 .put("message", error.message?.take(700) ?: "Не удалось выполнить запись на телефоне. Проверь дневник; автоматически не повторяю.")
         }
         if (result.optString("notes").isBlank()) result.put("notes", plan.optString("notes"))
+        plan.optJSONObject("table")?.let { result.put("table", it).put("meal", plan.optString("meal")) }
         result.put("sources", JSONArray(plan.objects("items").mapNotNull { it.optString("source_url").takeIf(String::isNotBlank) }))
         store.put(key(id), JSONObject().put("state", "finished").put("result", result).put("needs_report", true).toString())
         return requireNotNull(status(id))

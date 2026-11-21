@@ -166,6 +166,7 @@ class MealJobs:
             out.append({"key": key, "minutes_ago": int((time.time() - created) / 60), "state": state, "text": text,
                         "plan": json.loads(plan) if plan else None, "message": str(result.get("message", ""))[:300],
                         "awaiting": bool(plan) and state == "failed" and result.get("confirm") is True,
+                        "replied": state == "failed" and result.get("reply") is True and not result.get("confirm"),
                         "can_retry": bool(plan) and state == "failed" and not result.get("reply") and not result.get("receipts")})
         return out
 

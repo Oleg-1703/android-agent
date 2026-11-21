@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import brain
 from meal_jobs import MealJobs
-from nutrition import enrich, exact_facts, table
+from nutrition import enrich, exact_facts, table, table_rows
 
 SNICKERS = {"found": True, "exact_match": True, "product": "Snickers 50.5 g", "basis_grams": "100", "calories": "488",
             "protein": "9", "fat": "24", "carbs": "60", "source_url": "https://www.mars.com/snickers"}
@@ -72,6 +72,23 @@ class Table(unittest.TestCase):
         self.assertIn("⚠ оценка", text)
         self.assertIn("значения возьму из карточки FatSecret", text)
         self.assertIn("без позиций из карточек FatSecret", text)
+
+
+class TableRows(unittest.TestCase):
+    def test_rows_total_and_rounding_match_the_plain_table(self):
+        meal = plan(item("Котлеты", "335", "label", ("100", "200", "15", "10", "10")),
+                    item("Сникерс", "26", "estimate", ("100", "488", "9", "24", "60")),
+                    {"query": "Ролл", "source": "existing", "count": "1", "unit": "pieces"})
+        data = table_rows(meal)
+        self.assertEqual(data["rows"][0], {"name": "Котлеты", "grams": "335", "kcal": 670, "protein": 50.2, "fat": 33.5,
+                                           "carbs": 33.5, "estimate": False, "catalog": False})
+        self.assertTrue(data["rows"][1]["estimate"])
+        self.assertEqual(data["rows"][2], {"name": "Ролл", "grams": None, "kcal": None, "protein": None, "fat": None,
+                                           "carbs": None, "estimate": False, "catalog": True})
+        self.assertEqual(data["skipped_catalog"], 1)
+        self.assertEqual(data["total"], {"grams": "361", "kcal": 797, "protein": 52.6, "fat": 39.7, "carbs": 49.1})
+        self.assertIn("Итого 361 г: 797 ккал, Б 52.6 / Ж 39.7 / У 49.1", table(meal))
+        json.dumps(data)
 
 
 class Memory(unittest.TestCase):
@@ -221,6 +238,65 @@ class Confirmation(unittest.TestCase):
         self.assertIn("✅ Записать", result["message"])
         self.assertEqual(self.server.jobs.recent("z" * 32)[0]["awaiting"], True)
         self.assertEqual(self.server.jobs.recent("z" * 32)[0]["plan"]["items"][1]["query"], "Картошка")
+
+    def test_rich_table_capability_replaces_the_plain_table(self):
+        self.answers.append(self.photo_meal())
+        result = self.send("обед", capabilities=["rich_table"])
+        self.assertTrue(result["confirm"] and result["reply"])
+        self.assertEqual(result["table"]["total"]["grams"], "350")
+        self.assertEqual(result["meal"], "lunch")
+        self.assertEqual(len(result["table"]["rows"]), 2)
+        self.assertNotIn("Расчёт КБЖУ", result["message"])
+        self.assertNotIn("Итого", result["message"])
+        self.assertNotIn("Записать так", result["message"])
+        saved = self.server.jobs.recent("z" * 32)[0]["plan"]
+        self.assertEqual(saved["table"], result["table"])
+        self.assertNotIn("Расчёт КБЖУ", saved["notes"])
+        confirmed = self.send("ок", capabilities=["rich_table"])
+        self.assertEqual(confirmed["status"], "prepared")
+        self.assertEqual(confirmed["plan"]["table"], result["table"])
+
+    def test_without_capability_the_plain_table_stays(self):
+        result = self.draft()
+        self.assertNotIn("table", result)
+        self.assertIn("Расчёт КБЖУ по позициям", result["message"])
+
+    def test_voice_after_captioned_photos_revises_the_draft_and_exact_plan_is_prepared(self):
+        self.draft()
+        exact = plan(grams_item("Курица", "150", "label", "stated", ("100", "165", "31", "3.6", "0")),
+                     grams_item("Картошка", "200", "label", "stated", ("100", "80", "2", "0.1", "17")))
+        self.answers.append(exact)
+        result = self.send("Описание голосом: на обед, курицы 150, картошки 200")
+        context = self.contexts[1]["recent_requests"][0]
+        self.assertTrue(context["awaiting_confirmation"])
+        self.assertEqual([row["query"] for row in context["draft_items"]], ["Курица", "Картошка"])
+        self.assertEqual(result["status"], "prepared")
+        self.assertNotIn("confirm", result)
+        self.assertIn("CORRECTION of that draft", brain.SYSTEM)
+        self.assertIn("grams_source='stated'", brain.SYSTEM)
+
+    def test_announcement_then_photos_combine_with_the_earlier_request(self):
+        self.answers.append({"question": "", "items": [], "date": self.DATE, "meal": "other", "action": "answer", "reply": "Жду фото."})
+        first = self.send("сейчас скину фото обеда")
+        self.assertEqual(first["message"], "Жду фото.")
+        self.answers.append(self.photo_meal())
+        image = {"media_type": "image/jpeg", "data": "x"}
+        result = self.send("Разбери присланные фото", images=[image])
+        context = self.contexts[1]["recent_requests"][0]
+        self.assertTrue(context["awaiting_more_input"])
+        self.assertIn("сейчас скину фото обеда", context["request_text"])
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["confirm"])
+        self.assertIn("awaiting_more_input", brain.SYSTEM)
+
+    def test_awaiting_more_input_expires_after_ten_minutes(self):
+        self.answers.append({"question": "", "items": [], "date": self.DATE, "meal": "other", "action": "answer", "reply": "Жду фото."})
+        self.send("сейчас скину фото")
+        with self.server.jobs.connection() as db:
+            db.execute("UPDATE memory SET created=created-?", (11 * 60,))
+        self.answers.append(self.photo_meal())
+        self.send("Разбери присланные фото", images=[{"media_type": "image/jpeg", "data": "x"}])
+        self.assertFalse(self.contexts[1]["recent_requests"][0]["awaiting_more_input"])
 
     def test_ok_and_button_prepare_the_same_plan_without_a_model_call(self):
         for word in ("ок", "✅ Записать", "Всё верно!"):

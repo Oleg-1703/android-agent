@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
 import java.security.MessageDigest
+import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -88,6 +89,24 @@ class AgentService : Service() {
             val commands = AgentCommands(store, config, FatSecretApi(config, client), client, FatUi(this))
             var failures = 0
             var firstPoll = true
+            fun quiet(action: () -> Unit) { try { action() } catch (_: java.io.IOException) { } catch (_: ApiFailure) { } }
+            fun deliver(reply: CommandReply) {
+                val sentId = telegram.send(owner, reply.text, reply.confirm, if (reply.html) "HTML" else null)
+                if (reply.confirm && sentId > 0) {
+                    // Only the newest draft keeps live buttons: an older draft must never confirm the newer plan.
+                    val previous = store.get("confirm_msg").toLongOrNull()
+                    store.put("confirm_msg", sentId.toString())
+                    if (previous != null && previous != sentId) quiet { telegram.clearButtons(owner, previous) }
+                }
+                store.put("last_delivery", System.currentTimeMillis().toString())
+            }
+            fun respond(message: JSONObject): Boolean {
+                val reply = try { commands.handle(message, telegram) }
+                catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
+                catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }
+                if (running) deliver(reply)
+                return reply.stop
+            }
             while (running && !Thread.currentThread().isInterrupted) {
                 try {
                     if (firstPoll) {
@@ -128,6 +147,35 @@ class AgentService : Service() {
                         // Persist before dispatch: an interrupted command must never replay a diary write.
                         offset = id + 1
                         store.put(offsetKey, offset.toString())
+                        val callback = update.optJSONObject("callback_query")
+                        if (callback != null) {
+                            val callbackId = callback.optString("id")
+                            when (val decision = TelegramCallbacks.decide(callback, owner, telegram.serverTimeSeconds())) {
+                                is TelegramCallbacks.Decision.Ignore -> quiet { telegram.answerCallback(callbackId) }
+                                is TelegramCallbacks.Decision.Stale -> {
+                                    quiet { telegram.answerCallback(callbackId, "Кнопка устарела") }
+                                    quiet { telegram.send(owner, "Этому сообщению больше двух часов. Опиши еду заново или напиши «ок» к свежему расчёту.") }
+                                }
+                                is TelegramCallbacks.Decision.Accept -> {
+                                    val source = callback.getJSONObject("message")
+                                    val current = TelegramCallbacks.isCurrentDraft(source.optLong("message_id"), store.get("confirm_msg"))
+                                    quiet { telegram.answerCallback(callbackId, if (!current) "Кнопка устарела" else if (decision.confirm) "Записываю…" else "Отменяю") }
+                                    quiet { telegram.clearButtons(owner, source.getLong("message_id")) }
+                                    if (!current) {
+                                        // Double tap, tap after a cancel/confirm, or tap on an older draft: nothing is sent to the PC.
+                                        quiet { telegram.send(owner, "Эта кнопка относится к уже обработанному или старому расчёту. Используй кнопки под последним расчётом или опиши еду заново.") }
+                                        continue
+                                    }
+                                    store.put("confirm_msg", "")
+                                    store.put("last_message", System.currentTimeMillis().toString())
+                                    val pressed = TelegramCallbacks.asMessage(callback, decision.confirm)
+                                    // The confirmation is an ordinary owner text; no batching grace for a button.
+                                    if (decision.confirm) pressed.put("agent_batch", org.json.JSONArray().put(JSONObject(pressed.toString())))
+                                    if (respond(pressed)) { running = false }
+                                }
+                            }
+                            if (!running) break else continue
+                        }
                         val message = update.optJSONObject("message") ?: continue
                         if (!TelegramAccess.allowed(message, owner)) continue
                         val rejection = TelegramFreshness.rejection(message, telegram.serverTimeSeconds())
@@ -137,10 +185,9 @@ class AgentService : Service() {
                         }
                         store.put("last_message", System.currentTimeMillis().toString())
                         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) {
-                            val destination = if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "в эмуляторе ПК"
-                            val waiting = if (MealBatch.waitingForVoice(listOf(message))) "Жду голосовой комментарий к фото. Экран можно выключить." else "Собираю описание для ИИ на ПК. Экран можно выключить."
-                            telegram.send(owner, "Принял. $waiting Еду запишу в FatSecret $destination.")
                             val batch = mutableListOf(message)
+                            var acked = false
+                            MealBatch.ack(batch)?.let { telegram.send(owner, it); acked = true }
                             val started = SystemClock.elapsedRealtime()
                             var deadline = started + MealBatch.graceMillis(batch)
                             var cancelled = false
@@ -154,6 +201,13 @@ class AgentService : Service() {
                                 val next = queue.first
                                 val nextId = next.getLong("update_id")
                                 if (nextId < offset) { queue.removeFirst(); continue }
+                                val pending = next.optJSONObject("callback_query")
+                                if (pending != null) {
+                                    // Buttons are handled by the main loop; a cancel press also drops the batch being collected.
+                                    cancelled = pending.optString("data") == TelegramApi.CALLBACK_CANCEL &&
+                                        TelegramCallbacks.decide(pending, owner, telegram.serverTimeSeconds()) is TelegramCallbacks.Decision.Accept
+                                    break
+                                }
                                 val extra = next.optJSONObject("message")
                                 if (extra != null && TelegramAccess.allowed(extra, owner) && !MealBatch.eligible(extra)) {
                                     val control = extra.optString("text").trim().lowercase()
@@ -171,21 +225,12 @@ class AgentService : Service() {
                                 deadline = minOf(started + 180_000, SystemClock.elapsedRealtime() + MealBatch.graceMillis(batch))
                             }
                             if (cancelled || !running) continue
+                            if (!acked) MealBatch.ack(batch)?.let { telegram.send(owner, it) }
                             message.put("agent_batch", org.json.JSONArray(batch.map { org.json.JSONObject(it.toString()) }))
                         }
-                        val reply = try { commands.handle(message, telegram) }
-                        catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
-                        catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }
-                        if (running) {
-                            telegram.send(owner, reply.text, reply.confirm)
-                            store.put("last_delivery", System.currentTimeMillis().toString())
-                        }
-                        if (reply.stop) { running = false; break }
+                        if (respond(message)) { running = false; break }
                     }
-                    if (running) for (receipt in commands.resumePhone(telegram)) {
-                        telegram.send(owner, receipt)
-                        store.put("last_delivery", System.currentTimeMillis().toString())
-                    }
+                    if (running) for (receipt in commands.resumePhone(telegram)) deliver(receipt)
                     failures = 0
                 } catch (e: Exception) {
                     if (!running || Thread.currentThread().isInterrupted) break

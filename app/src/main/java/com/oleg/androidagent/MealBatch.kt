@@ -18,4 +18,12 @@ object MealBatch {
             messages.none { it.optString("caption", it.optString("text")).isNotBlank() }) 150_000 else 8_000
 
     fun waitingForVoice(messages: List<JSONObject>) = graceMillis(messages) == 150_000L
+
+    /** Acknowledgement for a batch; text gets none (it may be a correction, a question or a confirmation) and nothing promises a diary write. */
+    fun ack(messages: List<JSONObject>): String? = when {
+        messages.none { it.has("photo") || it.has("voice") } -> null
+        waitingForVoice(messages) -> "Жду голосовой комментарий к фото (до 2,5 мин) или напиши подпись."
+        messages.any { it.has("photo") } -> "Принял фото, разбираю."
+        else -> "Принял голосовое, разбираю."
+    }
 }

@@ -95,3 +95,29 @@ def table(plan):
     lines.append(f"Итого {grams_total:f} г: {total['calories']:.0f} ккал, Б {total['protein']:.1f} / "
                  f"Ж {total['fat']:.1f} / У {total['carbs']:.1f}" + (" (без позиций из карточек FatSecret)" if skipped else ""))
     return "Расчёт КБЖУ по позициям:\n" + "\n".join(lines)
+
+
+def table_rows(plan):
+    """Structured twin of table() for the phone's Telegram formatter; numbers are already rounded."""
+    rows, total, grams_total, skipped = [], dict.fromkeys(FIELDS, Decimal(0)), Decimal(0), 0
+    for item in plan["items"]:
+        nutrition = item.get("nutrition")
+        grams = item.get("grams")
+        if not nutrition or item.get("source") in {"existing", "saved"}:
+            skipped += 1
+            rows.append({"name": item["query"], "grams": str(grams) if grams else None, "kcal": None, "protein": None,
+                         "fat": None, "carbs": None, "estimate": False, "catalog": True})
+            continue
+        amount = Decimal(grams)
+        factor = amount / Decimal(nutrition["basis_grams"])
+        values = {key: Decimal(nutrition[key]) * factor for key in FIELDS}
+        for key in FIELDS:
+            total[key] += values[key]
+        grams_total += amount
+        rows.append({"name": item["query"], "grams": f"{amount:f}", "kcal": int(f"{values['calories']:.0f}"),
+                     "protein": float(f"{values['protein']:.1f}"), "fat": float(f"{values['fat']:.1f}"),
+                     "carbs": float(f"{values['carbs']:.1f}"), "estimate": item.get("source") == "estimate", "catalog": False})
+    return {"rows": rows, "skipped_catalog": skipped,
+            "total": {"grams": f"{grams_total:f}", "kcal": int(f"{total['calories']:.0f}"),
+                      "protein": float(f"{total['protein']:.1f}"), "fat": float(f"{total['fat']:.1f}"),
+                      "carbs": float(f"{total['carbs']:.1f}")}}
