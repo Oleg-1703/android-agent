@@ -266,7 +266,7 @@ class DeviceSmoke : Instrumentation() {
                             automation.executeShellCommand("input keyevent 224").close()
                             automation.executeShellCommand("wm dismiss-keyguard").close()
                             waitUntil("Phone not ready after unlock") { screen.canExecute() }
-                            check(commands.resumePhone(telegram).single().contains("QA_CANCELLED_BEFORE_SAVE"))
+                            check(commands.resumePhone(telegram).single().text.contains("QA_CANCELLED_BEFORE_SAVE"))
                             check(!brain.hasPendingPhone())
                         } else check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
                         check(commands.handle(message, telegram).text.contains("QA_CANCELLED_BEFORE_SAVE"))
