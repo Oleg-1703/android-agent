@@ -41,13 +41,16 @@ class PcUrlRecovery(
             if (lastAttempt != Long.MIN_VALUE && time - lastAttempt < MIN_INTERVAL_MILLIS) return null
             lastAttempt = time
         }
-        val url = try { PcUrl.fromChat(chatOf(owner), botId) } catch (_: Exception) { null } ?: return null
+        val url = try { PcUrl.fromChat(chatOf(owner), botId) } catch (e: Exception) {
+            Telemetry.log("url_recovery", ok = false, errClass = Telemetry.errClass(e)); null
+        } ?: run { Telemetry.log("url_recovery", ok = false, errClass = "no_pinned_url"); return null }
         val current = try { PcBrain.endpoint(config.optString("pc_url")).host } catch (_: IllegalArgumentException) { "" }
         val found = try { PcBrain.endpoint(url) } catch (_: IllegalArgumentException) { return null }
-        if (found.host == current) return null
+        if (found.host == current) { Telemetry.log("url_recovery", ok = true, flags = mapOf("changed" to false)); return null }
         config.put("pc_url", url)
         val saved = store.get("config")
         store.put("config", (if (saved.isBlank()) JSONObject() else JSONObject(saved)).put("pc_url", url).toString())
+        Telemetry.log("url_recovery", ok = true, flags = mapOf("changed" to true))
         return url
     }
     companion object {

@@ -30,6 +30,9 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         }
         return local.getJSONObject("result")
     }
+    /** Only the fixed stage identifier (first token, e.g. custom_nutrition_review) is logged, never the free text of the stage. */
+    private fun stageFlag(result: JSONObject): Map<String, Any> =
+        result.optString("stage").substringBefore(' ').takeIf { it.matches(Regex("[A-Za-z0-9_.-]{1,32}")) }?.let { mapOf("last_state" to it) } ?: emptyMap()
     fun run(id: String, prepared: JSONObject): JSONObject = start(id, prepared, false)
     fun cancel(id: String, prepared: JSONObject): JSONObject = start(id, prepared, true)
     private fun start(id: String, prepared: JSONObject, cancel: Boolean): JSONObject {
@@ -45,6 +48,7 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         store.put(key(id), JSONObject().put("state", "executing").toString())
         val stale = if (cancel) null else StaleWrite.clear(store)
         if (!cancel) store.put("custom_receipts", "[]")
+        val startedAt = System.nanoTime()
         val result = if (cancel) JSONObject().put("status", "failed").put("receipts", JSONArray())
             .put("message", "Запрос отменён до записи. Эта еда не добавлена.")
         else try { execute(plan) } catch (error: Exception) {
@@ -59,6 +63,8 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
             if (result.optString("status") == "complete") result.put("notes", listOf(result.optString("notes"), stale).filter { it.isNotBlank() }.joinToString("\n"))
             else result.put("message", listOf(result.optString("message"), stale).filter { it.isNotBlank() }.joinToString("\n"))
         }
+        Telemetry.log("phone_job", Telemetry.requestHash(id), result.optString("status") == "complete", (System.nanoTime() - startedAt) / 1_000_000,
+            flags = mapOf("status" to result.optString("status").take(20), "cancel" to cancel) + stageFlag(result))
         plan.optJSONObject("table")?.let { result.put("table", it).put("meal", plan.optString("meal")) }
         result.put("sources", JSONArray(plan.objects("items").mapNotNull { it.optString("source_url").takeIf(String::isNotBlank) }))
         store.put(key(id), JSONObject().put("state", "finished").put("result", result).put("needs_report", true).toString())

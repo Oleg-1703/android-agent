@@ -252,17 +252,59 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         return moved
     }
     private fun indexedTop() { for (page in 0 until 60) if (!indexedScroll(false)) return }
+    /** What a diary read got through before it stopped; only counts and a fixed step name reach the event log. */
+    private class ScanTrace { var step = "start"; var rows = 0; var sections = 0; var sectionFound = false; var expanded = false }
     override fun snapshot(meal: String): DiarySnapshot {
+        val started = SystemClock.elapsedRealtime()
+        val trace = ScanTrace()
+        try {
+            val result = snapshotTraced(meal, trace)
+            Telemetry.log("diary_scan", ok = true, ms = SystemClock.elapsedRealtime() - started,
+                n = mapOf("rows" to trace.rows, "sections" to trace.sections, "entries" to result.entries.size),
+                flags = mapOf("step" to "done", "expanded" to trace.expanded, "section_found" to trace.sectionFound, "complete" to result.complete))
+            return result
+        } catch (error: Throwable) {
+            if (error is InterruptedException) throw error
+            Telemetry.log("diary_scan", ok = false, ms = SystemClock.elapsedRealtime() - started, errClass = Telemetry.errClass(error),
+                n = mapOf("rows" to trace.rows, "sections" to trace.sections),
+                flags = mapOf("step" to trace.step, "expanded" to trace.expanded, "section_found" to trace.sectionFound, "complete" to false),
+                ids = fingerprint())
+            throw error
+        }
+    }
+    override fun fingerprint(): List<String> = try {
+        main {
+            val root = FatAccessibilityService.instance?.rootInActiveWindow
+            val ids = linkedSetOf<String>()
+            if (root?.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE) {
+                var visited = 0
+                fun walk(node: AccessibilityNodeInfo, depth: Int) {
+                    if (depth > 24 || visited++ >= 600 || ids.size >= 60) return
+                    if (node.isVisibleToUser && !node.isPassword) node.viewIdResourceName?.removePrefix(prefix)?.let { ids.add(it) }
+                    for (i in 0 until node.childCount) node.getChild(i)?.let { walk(it, depth + 1) }
+                }
+                walk(root, 0)
+            }
+            ids.toList()
+        }
+    } catch (_: Exception) { emptyList() }
+    private fun snapshotTraced(meal: String, trace: ScanTrace): DiarySnapshot {
         require(meal in Meals.types)
         val date = java.time.LocalDate.now().toString()
+        trace.step = "open_diary"
         diary(); requireToday()
         fun section(rows: Map<Int, DiaryRow>): List<Pair<Int, DiaryRow>> {
+            trace.step = "find_section"
+            trace.rows = rows.size
+            trace.sections = rows.values.count { it.kind == "heading" }
             val heading = rows.entries.singleOrNull { it.value.kind == "heading" && it.value.title.lowercase() in labels(meal) }?.key
                 ?: throw DiaryReadFailure("Не найден раздел приёма пищи в дневнике FatSecret.")
             return rows.entries.dropWhile { it.key <= heading }.takeWhile { it.value.kind !in setOf("heading", "boundary") }.map { it.key to it.value }
         }
+        trace.step = "scan_first"
         var rows = scanDiary()
         var content = section(rows)
+        trace.sectionFound = true
         if (content.isEmpty()) {
             val heading = rows.values.single { it.kind == "heading" && it.title.lowercase() in labels(meal) }
             if (heading.calories !in setOf("", "0")) throw DiaryReadFailure("Раздел приёма пищи не раскрылся: заголовок показывает калории, строк нет.")
@@ -274,6 +316,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         var expectedCount = DiarySectionProof.count(summary.second.title)
         if (expectedCount != 0 && content.none { it.second.kind == "entry" }) {
             val original = summary
+            trace.step = "expand"
             indexedTop()
             var expanded = false
             for (page in 0 until 60) {
@@ -293,12 +336,15 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 if (!indexedScroll(true)) break
             }
             require(expanded) { "Не удалось раскрыть продукты приёма пищи." }
+            trace.expanded = true
+            trace.step = "scan_after_expand"
             rows = scanDiary()
             content = section(rows)
             summary = content.first { it.second.kind == "summary" }
             if (expectedCount != null) require(summary.second.title == original.second.title)
             expectedCount = DiarySectionProof.count(summary.second.title)
         }
+        trace.step = "check_entries"
         val entries = content.filter { it.second.kind == "entry" }.map { (_, row) ->
             require(row.title.isNotBlank() && row.detail.isNotBlank() && row.calories.matches(Regex("[0-9]+")))
             DiaryEntry(row.title, row.detail, row.calories)

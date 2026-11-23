@@ -17,3 +17,8 @@ secrets.properties
 __pycache__/
 
 *.sqlite
+
+# PC brain event log and weekly reports (private)
+events.jsonl
+events.jsonl.tmp
+reports/

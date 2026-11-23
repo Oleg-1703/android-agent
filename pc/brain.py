@@ -21,6 +21,7 @@ from food_library import FoodLibrary, library_lines, normalize as normalize_repl
 from meal_jobs import MealJobs, Emulator, validate_plan
 from meal_thread import MealThreads
 from nutrition import enrich, table, table_rows
+import telemetry
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -297,6 +298,31 @@ def catalog_item_without_grams(plan):
     return any(item.get("source") in {"existing", "saved"} and not item.get("grams") for item in plan.get("items", []))
 
 
+class Failure(ValueError):
+    """A user-facing refusal with a short machine class for the event log."""
+    def __init__(self, message, cls):
+        super().__init__(message)
+        self.cls = cls
+
+
+_ctx = threading.local()
+
+
+def tele(type, **fields):
+    """Event of the request being processed on this thread (request id and meal thread are attached)."""
+    telemetry.emit(type, req=getattr(_ctx, "req", None), thread=getattr(_ctx, "thread", None), **fields)
+
+
+def model_error_class(error):
+    if isinstance(error, SubscriptionLimit):
+        return "quota"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(error, (RuntimeError, ValueError)) and re.fullmatch(r"[a-z_]{3,40}", str(error)):
+        return str(error)
+    return type(error).__name__
+
+
 class SubscriptionLimit(RuntimeError):
     def __init__(self, reset=""):
         super().__init__("subscription_limit")
@@ -344,7 +370,21 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def parse_meal(text: str, date: str, cli: str, cwd: Path, image: dict | None = None, timeout: float = 75,
+def parse_meal(*args, purpose: str = "parse", **kwargs) -> dict:
+    """The model call with one event per call: duration, success, error class (quota, timeout, CLI exit code...)."""
+    started = time.monotonic()
+    images = len(kwargs.get("images") or []) + (1 if kwargs.get("image") else 0)
+    try:
+        result = _parse_meal(*args, **kwargs)
+    except BaseException as error:
+        tele("model_call", ok=False, ms=int((time.monotonic() - started) * 1000), err_class=model_error_class(error),
+             n={"images": images}, flags={"purpose": purpose, **({"rc": error.rc} if hasattr(error, "rc") else {})})
+        raise
+    tele("model_call", ok=True, ms=int((time.monotonic() - started) * 1000), n={"images": images}, flags={"purpose": purpose})
+    return result
+
+
+def _parse_meal(text: str, date: str, cli: str, cwd: Path, image: dict | None = None, timeout: float = 75,
                schema: dict | None = None, system: str = SYSTEM, images: list | None = None, text_limit: int = 4000,
                tools: str = "", effort: str = "low", raw: bool = False) -> dict:
     dt.date.fromisoformat(date)
@@ -373,7 +413,9 @@ def parse_meal(text: str, date: str, cli: str, cwd: Path, image: dict | None = N
         reset = quota_reset(result.stdout)
         if reset is not None:
             raise SubscriptionLimit(reset)
-        raise RuntimeError("subscription_unavailable")
+        failure = RuntimeError("subscription_unavailable")
+        failure.rc = result.returncode
+        raise failure
     if len(result.stdout) > 1_000_000:
         raise RuntimeError("invalid_model_output")
     if all_images:
@@ -406,6 +448,17 @@ def attachment(value: dict, kind: str) -> bytes:
 
 
 def transcribe(data: bytes, cwd: Path, timeout: float = 45) -> str:
+    started = time.monotonic()
+    try:
+        text = _transcribe(data, cwd, timeout)
+    except BaseException as error:
+        tele("transcribe", ok=False, ms=int((time.monotonic() - started) * 1000), err_class=model_error_class(error))
+        raise
+    tele("transcribe", ok=True, ms=int((time.monotonic() - started) * 1000), n={"chars": len(text)})
+    return text
+
+
+def _transcribe(data: bytes, cwd: Path, timeout: float = 45) -> str:
     environment = cwd.parent.parent / "voice-venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not environment.is_file():
         raise RuntimeError("voice_not_installed")
@@ -456,7 +509,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
             raise ValueError('too_many_candidates')
         with self.busy:
             result = parse_meal(payload, dt.date.today().isoformat(), self.cli, self.cwd, schema=schema,
-                                system=system, timeout=25, text_limit=20000)
+                                system=system, timeout=25, text_limit=20000, purpose="resolve_food")
         index = result.get('index')
         if type(index) is not int or not -1 <= index < len(candidates):
             raise ValueError('invalid_selection')
@@ -473,15 +526,34 @@ nutrition or quantities; the executor reads them from the selected card.'''
         self.threads = MealThreads(cwd / "meal-thread.sqlite", cwd / "thread-images")
         self.library = FoodLibrary(cwd / "food-library.sqlite")
         self.jobs = MealJobs(cwd / "meal-jobs.sqlite", self.process_custom_meal)
+        self.phone_events = telemetry.PhoneEvents(telemetry.configure(cwd))
 
     def web_search(self, payload, schema, system):
         return parse_meal(json.dumps(payload, ensure_ascii=False), dt.date.today().isoformat(), self.cli, self.cwd,
-                          schema=schema, system=system, tools="WebSearch,WebFetch", timeout=170, effort="medium")
+                          schema=schema, system=system, tools="WebSearch,WebFetch", timeout=170, effort="medium", purpose="web_search")
 
     def job_state(self, key):
         return (self.jobs.get(key) or {}).get("status")
 
     def process_custom_meal(self, payload):
+        """Runs one request and records its outcome (prepared/draft/reply/failed/uncertain) in the event log."""
+        _ctx.req, _ctx.thread = payload.get("_execution_id"), None
+        started = time.monotonic()
+        try:
+            result = self._process_custom_meal(payload)
+        except Exception as error:
+            refusal = isinstance(error, ValueError)
+            tele("request_outcome", ok=False, ms=int((time.monotonic() - started) * 1000),
+                 err_class=getattr(error, "cls", None) or ("plan_invalid" if refusal else telemetry.exc_class(error)),
+                 flags={"outcome": "failed" if refusal else "uncertain"})
+            raise
+        status = result.get("status")
+        outcome = ("draft" if result.get("confirm") else "reply" if result.get("reply") else "failed") if status == "failed" else status
+        tele("request_outcome", ok=outcome != "failed" and status != "uncertain", ms=int((time.monotonic() - started) * 1000),
+             flags={"outcome": outcome, "target": "phone" if payload.get("target") == "phone" else "emulator"})
+        return result
+
+    def _process_custom_meal(self, payload):
         key, text, date = payload["_execution_id"], payload["text"], payload["date"]
         voice = payload.get("voice")
         transcript = transcribe(attachment(voice, "voice"), self.cwd) if voice else ""
@@ -493,23 +565,27 @@ nutrition or quantities; the executor reads them from the selected card.'''
         threads = self.threads
         threads.cleanup(now)
         thread = threads.open_thread(now)
+        _ctx.thread = thread
         draft = threads.draft(thread)
         if draft and not new_images and is_confirm_word(" ".join(part for part in (typed, transcript) if part)):
+            tele("confirm")
             plan = json.loads(json.dumps(draft))
             if plan["date"] != date:
-                raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
+                raise Failure("Пока поддерживается только сегодняшний дневник. Ничего не записано.", "wrong_date")
             return self.prepare(thread, key, plan, payload)
         new_turn = {"role": "user", "ts": now, "text": typed, "voice": transcript, "images": new_images}
         closed = threads.closed_meals(now, CLOSED_HOURS, self.job_state)
+        if draft:
+            tele("correction")  # a new message while a draft waits for confirmation
         prompt, images = build_prompt(date, now, closed, threads.turns(thread), draft, new_turn, self.library.all())
         with self.busy:
             try:
                 answer = parse_meal(prompt, date, self.cli, self.cwd, schema=build_schema(catalog), system=build_system(catalog),
                                     images=images, raw=True, text_limit=400000, timeout=120)
             except SubscriptionLimit as error:
-                raise ValueError("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else "")) from None
-            except (RuntimeError, subprocess.TimeoutExpired, OSError):
-                raise ValueError("ИИ по подписке сейчас недоступен. Ничего не записано; платный API не подключался.") from None
+                raise Failure("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else ""), "quota") from None
+            except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
+                raise Failure("ИИ по подписке сейчас недоступен. Ничего не записано; платный API не подключался.", model_error_class(error)) from None
         # The turn is stored only once the model answered, so a failed request never pollutes the dialog.
         threads.add_turn(thread, "user", typed, transcript, new_images, now=now)
         reply = str(answer.get("reply") or "").strip()[:1500]
@@ -522,7 +598,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
         if answer.get("kind") == "drop":
             # Closing is always safe (nothing is written), so the model may do it.
             threads.add_turn(thread, "bot", reply or "Хорошо, ничего не записываю.", now=now)
-            threads.close(thread, "cancelled", now=now)
+            threads.close(thread, "cancelled", now=now)  # records the thread_close event
             return {"status": "failed", "reply": True, "message": reply or "Хорошо, ничего не записываю."}
         try:
             if not isinstance(meal, dict) or not meal.get("items"):
@@ -550,10 +626,12 @@ nutrition or quantities; the executor reads them from the selected card.'''
                 if action.get("action") == "save":
                     entry, created = self.library.save({key: action.get(key) for key in ("name", "aliases", "nutrition", "default_grams", "note")})
                     acks.append(f"{'Сохранил' if created else 'Обновил'} в библиотеке: {entry['name']}.")
+                    tele("library_save", ok=True, flags={"created": bool(created), "by": "model"})
                 elif action.get("action") == "delete":
                     acks.append(f"Удалил из библиотеки: {name}." if self.library.delete(name) else f"В библиотеке нет «{name}».")
             except ValueError as error:
                 acks.append(f"Не сохранил «{name}»: {error}")
+                tele("library_save", ok=False, err_class="invalid_entry")
         return acks
 
     def resolve_library(self, plan):
@@ -562,6 +640,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
             if item.get("source") != "library":
                 continue
             entry = self.library.find(item.get("query", ""))
+            tele("library_reuse", ok=bool(entry))
             if not entry:
                 return f"В библиотеке нет «{str(item.get('query'))[:100]}». Пришли состав (КБЖУ на 100 г или на порцию) или напиши, что это за еда."
             for key in ("search_queries", "count", "unit", "intent", "barcode", "reusable"):
@@ -580,6 +659,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
     def propose(self, thread, key, meal, draft, closed, payload, now, catalog):
         plan = {**meal, "question": "", "notes": str(meal.get("notes") or "")}
         if not catalog and catalog_item_without_grams(plan):
+            tele("catalog_gate", ok=False, flags={"catalog": False})
             return self.say(thread, "Не могу записать блюдо без веса. Напиши, сколько граммов ты съел, или поправь состав.")
         question = self.resolve_library(plan)
         if question:
@@ -593,7 +673,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
                 if item.get("source") != "library":
                     item.pop("separate", None)  # only code decides what stays a card of its own
         if plan["date"] != payload["date"]:
-            raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
+            raise Failure("Пока поддерживается только сегодняшний дневник. Ничего не записано.", "wrong_date")
         if draft:
             reuse_web_facts(plan, draft)
         with self.busy:
@@ -633,7 +713,9 @@ nutrition or quantities; the executor reads them from the selected card.'''
                 known = self.library.find(item["query"]) or {}  # an update keeps aliases, default grams and note
                 self.library.save({**{k: known[k] for k in ("aliases", "default_grams", "note") if k in known},
                                    "name": known.get("name", item["query"]), "nutrition": item["nutrition"]})
+                tele("library_save", ok=True, flags={"created": not known, "by": "reusable"})
             except ValueError as error:
+                tele("library_save", ok=False, err_class="invalid_entry")
                 skipped.append(f"{item['query']} ({error})")
         if skipped:
             plan["notes"] = (str(plan.get("notes", "")) + "\nВ библиотеку не сохранено: " + "; ".join(skipped)).strip()
@@ -645,7 +727,14 @@ nutrition or quantities; the executor reads them from the selected card.'''
         self.threads.close(thread, "prepared", job=key, meal=meal_summary(plan))
         if payload.get("target") == "phone":
             return {"status": "prepared", "target": "phone", "plan": plan}
-        result = Emulator(self.cwd.parent.parent).log(plan)
+        started = time.monotonic()
+        try:
+            result = Emulator(self.cwd.parent.parent).log(plan)
+        except Exception as error:
+            tele("emulator_run", ok=False, ms=int((time.monotonic() - started) * 1000), err_class=telemetry.exc_class(error))
+            raise
+        tele("emulator_run", ok=result.get("status") == "complete", ms=int((time.monotonic() - started) * 1000),
+             flags={"status": str(result.get("status"))})
         if not result.get("notes"):
             result["notes"] = str(plan.get("notes", ""))[:600]
         result["sources"] = [item.get("source_url", "") for item in plan["items"] if item.get("source_url")]
@@ -687,7 +776,22 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(401, {"error": "unauthorized"})
             return
         if self.path == "/v1/drafts/cancel":
-            self.respond(200, {"cancelled": self.server.threads.cancel()})
+            had_draft = self.server.threads.cancel()
+            telemetry.emit("draft_cancel", flags={"had_draft": bool(had_draft)})
+            self.respond(200, {"cancelled": had_draft})
+            return
+        if self.path == "/v1/events":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= telemetry.PhoneEvents.MAX_BODY or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("invalid_batch")
+                self.respond(200, self.server.phone_events.accept(json.loads(self.rfile.read(length))))
+            except PermissionError:
+                self.respond(429, {"error": "rate_limited"})
+            except OSError:  # disk full or locked log: the phone keeps its buffer and retries later
+                self.respond(503, {"error": "events_unavailable"})
+            except (ValueError, TypeError, AttributeError):
+                self.respond(400, {"error": "invalid_events"})
             return
         phone_receipt = re.fullmatch(r'/v1/jobs/([a-f0-9]{32,64})/(claim|receipt)', self.path)
         if phone_receipt:
@@ -698,8 +802,11 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
                 key, action = phone_receipt.groups()
                 result = self.server.jobs.claim_phone(key) if action == 'claim' else self.server.jobs.finish_phone(key, body)
+                telemetry.emit("phone_" + action, req=key, ok=True, err_class=str(body.get("stage") or "")[:40] if action == "receipt" and body.get("status") != "complete" else None,
+                               flags={"status": result.get("status"), **({"receipt": body.get("status")} if action == "receipt" else {})})
                 self.respond(200, result)
             except (ValueError, TypeError, KeyError):
+                telemetry.emit("phone_" + phone_receipt.group(2), req=phone_receipt.group(1), ok=False, err_class="conflict")
                 self.respond(409, {'error': 'phone_job_conflict'})
             return
         if self.path == '/v1/resolve-food':
@@ -736,9 +843,14 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("voice"):
                     attachment(body["voice"], "voice")
                 request_id = body.pop("request_id")
+                known = self.server.jobs.get(request_id) is not None
                 result = self.server.jobs.submit(request_id, body)
+                telemetry.emit("request_duplicate" if known else "request_received", req=request_id, n={
+                    "text": 1, "voice": 1 if body.get("voice") else 0, "photo": len(images)},
+                    flags={"target": body.get("target", "emulator")})
                 self.respond(202, {"request_id": request_id, **result})
-            except (ValueError, KeyError, TypeError, TimeoutError):
+            except (ValueError, KeyError, TypeError, TimeoutError) as error:
+                telemetry.emit("request_rejected", ok=False, err_class=model_error_class(error))
                 self.respond(400, {"error": "invalid_request"})
             return
         if self.path != "/v1/meal":
@@ -792,7 +904,7 @@ class Handler(BaseHTTPRequestHandler):
             if previous:
                 text = previous["text"] + "\nУточнение пользователя: " + text
                 image = image or previous["image"]
-            meal = parse_meal(text, date, self.server.cli, self.server.cwd, image=image, timeout=max(1, deadline - time.monotonic()))
+            meal = parse_meal(text, date, self.server.cli, self.server.cwd, image=image, timeout=max(1, deadline - time.monotonic()), purpose="legacy_meal")
             with self.server.draft_lock:
                 if meal.get("question"):
                     conversation = conversation or str(uuid.uuid4())
@@ -856,6 +968,7 @@ def main():
     cwd = args.config.parent / "empty-workspace"
     cwd.mkdir(exist_ok=True)
     server = BrainServer(("127.0.0.1", args.port), config, cli, cwd)
+    telemetry.emit("pc_start", flags={"port": args.port, "phone_catalog": bool(config.get("phone_catalog", False))})
     print(f"Subscription brain listening on loopback port {args.port}; no Telegram polling.", flush=True)
     server.serve_forever()
 

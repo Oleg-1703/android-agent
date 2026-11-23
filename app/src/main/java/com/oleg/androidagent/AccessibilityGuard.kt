@@ -33,7 +33,7 @@ class AccessibilityGuard(private val store: StateStore, private val running: () 
     /** True when the service is running (possibly after re-enabling it). Never throws. */
     fun ensure(): Boolean {
         if (running()) {
-            if (store.get(OUTAGE_KEY).isNotBlank()) store.put(OUTAGE_KEY, "")
+            if (store.get(OUTAGE_KEY).isNotBlank()) { store.put(OUTAGE_KEY, ""); Telemetry.log("a11y_on", flags = mapOf("reenabled" to false)) }
             return true
         }
         val time = now()
@@ -43,7 +43,8 @@ class AccessibilityGuard(private val store: StateStore, private val running: () 
             if (enabled) for (i in 0 until 10) {
                 settle()
                 if (running()) {
-                    if (store.get(OUTAGE_KEY).isNotBlank()) store.put(OUTAGE_KEY, "")
+                    if (store.get(OUTAGE_KEY).isNotBlank()) { store.put(OUTAGE_KEY, ""); Telemetry.log("a11y_on", flags = mapOf("reenabled" to true)) }
+                    Telemetry.log("a11y_reenabled", ok = true)
                     return true
                 }
             }
@@ -52,6 +53,7 @@ class AccessibilityGuard(private val store: StateStore, private val running: () 
             try {
                 notify(MESSAGE)
                 store.put(OUTAGE_KEY, time.toString())
+                Telemetry.log("a11y_off", flags = mapOf("self_enable_tried" to (lastAttempt == time)))
             } catch (_: Exception) { /* A lost message is retried at the next check; it must not stop the agent. */ }
         }
         return false

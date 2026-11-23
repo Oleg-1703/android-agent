@@ -15,6 +15,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import telemetry
+
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 MESSAGE_RE = re.compile(r"AA-URL (https://[a-z0-9-]+\.trycloudflare\.com)")
 PREFIX = "AA-URL "
@@ -78,10 +80,18 @@ def main(argv=None) -> int:
     if not url:
         print("no tunnel URL yet")
         return 2
+    tele = telemetry.Telemetry(telemetry.events_path(state / "empty-workspace"))
     try:
-        print(publish(url, state / "published-url.txt", dry_run=args.dry_run))
+        outcome = publish(url, state / "published-url.txt", dry_run=args.dry_run)
+        print(outcome)
+        if outcome == "published":
+            tele.emit("tunnel_url_change", ok=True)
+            tele.emit("publish", ok=True)
+        elif outcome == "unchanged":
+            tele.emit("watchdog_tick", ok=True)  # every 5 minutes: its gaps show when the PC was off
     except Exception as error:  # Never echo request objects: they carry the token in their URL.
         print("publish failed:", type(error).__name__, getattr(error, "code", ""))
+        tele.emit("publish", ok=False, err_class=type(error).__name__, flags={"http": getattr(error, "code", 0) or 0})
         return 1
     return 0
 

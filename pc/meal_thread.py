@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 
+import telemetry
+
 IDLE_SECONDS = 3 * 3600
 IMAGE_SECONDS = 24 * 3600
 MAX_IMAGES = 10
@@ -60,6 +62,8 @@ class MealThreads:
             for name in json.loads(raw):
                 (self.image_dir / name).unlink(missing_ok=True)
         db.execute("UPDATE turns SET images='[]' WHERE thread=?", (thread,))
+        user_turns = db.execute("SELECT count(*) FROM turns WHERE thread=? AND role='user'", (thread,)).fetchone()[0]
+        telemetry.emit("thread_close", thread=thread, flags={"reason": state}, n={"user_turns": user_turns})
         db.execute("UPDATE threads SET state=?, closed=?, draft=NULL, job=?, meal=? WHERE id=?",
                    (state, now, job, json.dumps(meal, ensure_ascii=False) if meal else None, thread))
 

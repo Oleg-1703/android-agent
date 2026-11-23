@@ -18,6 +18,8 @@ interface CustomMealScreen {
     fun screenStamp(): String
     fun searchContext(): String
     fun save(expectedPreview: String, expectedStamp: String, expectedContext: String)
+    /** Up to 60 visible view resource ids of the current screen (ids only, no text), for diagnosing a failed scan or verification. */
+    fun fingerprint(): List<String> = emptyList()
 }
 
 /** The owner authorizes exact custom foods; a catalog substitute is never used. */
@@ -82,6 +84,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
     fun log(plan: JSONObject): JSONObject {
         Meals.validate(plan)
         require(plan.getString("date") == LocalDate.now().toString()) { "Пока поддерживается только сегодняшний дневник." }
+        val req = Telemetry.requestHash(plan.optString("_execution_id"))
         val notes = mutableListOf<String>()
         StaleWrite.clear(store)?.let { notes.add(it) }
         plan.objects("items").forEach {
@@ -95,7 +98,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         for (item in items) {
             progress("ИИ разобрал запрос. Открываю FatSecret и читаю дневник перед записью.")
             // An unreadable diary does not stop the write (a duplicate is cheap); it only makes verification impossible.
-            val before = try { beforeSnapshot(plan.getString("meal")).takeIf { it.complete } } catch (error: IllegalArgumentException) { null }
+            val before = try { Telemetry.stage(req, "before_snapshot") { beforeSnapshot(plan.getString("meal")) }.takeIf { it.complete } } catch (error: IllegalArgumentException) { null }
                 ?: DiarySnapshot(LocalDate.now().toString(), plan.getString("meal"), emptyList(), false).also {
                     val note = "Дневник перед записью прочитан не полностью, поэтому записанное нельзя сверить автоматически."
                     if (note !in notes) notes.add(note)
@@ -109,9 +112,11 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             }
             var savedDraft: SavedMealDraft? = null
             val preview = try {
-                if (saved) ui.prepareSaved(plan.getString("meal"), item, onContext).also { savedDraft = it }.preview()
-                else if (existing) ui.prepareExisting(plan.getString("meal"), item, onContext)
-                else ui.createCustom(plan.getString("meal"), item, onContext)
+                Telemetry.stage(req, if (existing) "prepare_existing" else "create_custom") {
+                    if (saved) ui.prepareSaved(plan.getString("meal"), item, onContext).also { savedDraft = it }.preview()
+                    else if (existing) ui.prepareExisting(plan.getString("meal"), item, onContext)
+                    else ui.createCustom(plan.getString("meal"), item, onContext)
+                }
             } catch (error: Exception) {
                 if (existing || (cleanupPrewrite && !ui.commitStarted())) {
                     try {
@@ -130,8 +135,10 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             if (diaryName != null) intent.put("diary_name", diaryName)
             savedDraft?.let { intent.put("saved_recipe", it.json()) }
             store.put("write_intent", intent.toString())
-            if (saved) ui.saveSaved(requireNotNull(savedDraft), plan.getString("meal"), ui.screenStamp())
-            else ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
+            Telemetry.stage(req, "save") {
+                if (saved) ui.saveSaved(requireNotNull(savedDraft), plan.getString("meal"), ui.screenStamp())
+                else ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
+            }
             progress("Сохранение отправлено. Проверяю запись в дневнике; повторно сохранять не буду.")
             var verified = false
             if (before.complete) for (attempt in 0 until 3) {
@@ -139,6 +146,8 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
                 val after = try { ui.snapshot(plan.getString("meal")) } catch (error: Exception) { if (error is InterruptedException) throw error; null }
                 if (after != null && (savedDraft?.verified(before, after) ?: DiaryVerification.addedExactly(before, after, preview, diaryName))) { verified = true; break }
             }
+            Telemetry.log("stage", req, verified, flags = mapOf("stage" to "verify", "diary_complete" to before.complete))
+            if (!verified) Telemetry.log("verify_failed", req, false, ids = ui.fingerprint())
             if (verified) {
                 receipts.put(JSONObject().put("preview", preview).put("source", item.optString("source", "user")))
                 store.put("custom_receipts", receipts.toString())

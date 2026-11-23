@@ -35,6 +35,7 @@ class AgentService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = SecretStore(this)
+        Telemetry.buffer = EventBuffer(store)
         unlockEvents = PhoneUnlockEvents(this) { if (running && waitingForPhone) unlockSignal.request() }
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -88,6 +89,12 @@ class AgentService : Service() {
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
             val commands = AgentCommands(store, config, FatSecretApi(config, client), client, FatUi(this))
             var failures = 0
+            val info = try { packageManager.getPackageInfo(packageName, 0) } catch (_: Exception) { null }
+            Telemetry.log("app_start", n = mapOf("version_code" to (info?.longVersionCode ?: 0L).toInt(), "sdk" to android.os.Build.VERSION.SDK_INT),
+                flags = mapOf("version" to (info?.versionName?.takeIf { it.matches(Regex("[A-Za-z0-9_.+-]{1,32}")) } ?: "unknown"),
+                    "write_secure" to (checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == android.content.pm.PackageManager.PERMISSION_GRANTED),
+                    "phone_exec" to config.optBoolean("pc_execute_on_phone"), "pc_consent" to config.optBoolean("pc_consent")))
+            val flusher = Telemetry.buffer?.let { buffer -> EventFlusher(buffer) { body -> PcBrain(config, client, store).sendEvents(body) } }
             val a11y = if (config.optBoolean("pc_execute_on_phone")) AccessibilityGuard.create(this, store) { telegram.send(owner, it) }.also { AccessibilityGuard.current = it } else null
             var firstPoll = true
             fun quiet(action: () -> Unit) { try { action() } catch (_: java.io.IOException) { } catch (_: ApiFailure) { } }
@@ -133,6 +140,7 @@ class AgentService : Service() {
                     unlockSignal.consume()
                     if (!running) break
                     store.put("last_contact", System.currentTimeMillis().toString())
+                    flusher?.flush()
                     status("listening", if (commands.hasPendingPhone()) "Еда распознана. Жду разблокировки для записи, экран удерживать не нужно."
                         else "На связи. Открой бота в Telegram и отправь /help.")
                     if (firstPoll) {

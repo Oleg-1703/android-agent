@@ -16,6 +16,7 @@ object StaleWrite {
             journal.optString("preview").ifBlank { journal.optJSONObject("draft")?.optString("preview").orEmpty() }
         } catch (_: Exception) { "" }
         store.put("write_intent", "")
+        Telemetry.log("stale_write_cleared")
         return "Предыдущая запись осталась не сверена" + (if (preview.isNotBlank()) " (${preview.substringBefore('\n').take(200)})" else "") +
             ". Это не мешает новой записи; её я не повторял. Проверь дневник FatSecret."
     }

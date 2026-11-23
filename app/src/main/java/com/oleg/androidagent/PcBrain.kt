@@ -33,6 +33,15 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         require(index == -1 || index in rows.indices)
         return index.takeIf { it >= 0 }
     }
+    /** Best effort: sends buffered phone events to the PC (`POST /v1/events`). False keeps them for a later attempt. */
+    fun sendEvents(body: JSONObject): Boolean {
+        if (!config.optBoolean("pc_consent")) return false
+        return try {
+            val request = jobRequest("v1/events").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            JSONObject(Http.text(client.newBuilder().callTimeout(8, java.util.concurrent.TimeUnit.SECONDS).build(), request, 2000)).optInt("accepted", -1) >= 0
+        } catch (e: ApiFailure) { e.status == 400 /* a batch the PC calls malformed would block the queue for ever */ }
+        catch (_: Exception) { false }
+    }
     fun resumePhone(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<String> =
         plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map(::receipt)
     /** Best effort: a cancelled estimated draft must not be confirmable by a later "ок". Never breaks the local cancel. */
@@ -175,7 +184,12 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         payload.put("request_id", id)
         val request = jobRequest("v1/log").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
         store?.put("pc_last_job", id)
-        val response = JSONObject(Http.text(client, request, 16000))
+        val callStarted = System.nanoTime()
+        val response = try { JSONObject(Http.text(client, request, 16000)) } catch (e: Exception) {
+            Telemetry.log("pc_call", Telemetry.requestHash(id), false, (System.nanoTime() - callStarted) / 1_000_000, Telemetry.errClass(e), flags = mapOf("call" to "log"))
+            throw e
+        }
+        Telemetry.log("pc_call", Telemetry.requestHash(id), true, (System.nanoTime() - callStarted) / 1_000_000, flags = mapOf("call" to "log"))
         fun finish(result: JSONObject): String {
             lastConfirm = result.optString("status") == "failed" && result.optBoolean("confirm")
             if (lastConfirm) MealTable.draft(result)?.let { return it }
@@ -194,7 +208,10 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         if (response.optString("status") !in setOf("queued", "running")) return finish(response)
         for (attempt in 0 until 200) {
             Thread.sleep(Progress.POLL_MILLIS)
-            val status = JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))
+            val status = try { JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)) } catch (e: Exception) {
+                Telemetry.log("pc_call", Telemetry.requestHash(id), false, errClass = Telemetry.errClass(e), flags = mapOf("call" to "poll"))
+                throw e
+            }
             if (status.optString("status") !in setOf("queued", "running")) return finish(status)
             Progress.message(attempt)?.let(progress)
         }

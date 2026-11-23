@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('start', 'stop', 'status', 'pair', 'watchdog', 'install-autostart', 'uninstall-autostart')][string]$Action = 'status',
+    [ValidateSet('start', 'stop', 'status', 'pair', 'watchdog', 'install-autostart', 'uninstall-autostart', 'install-reports', 'uninstall-reports')][string]$Action = 'status',
     [string]$ToolsRoot = "$env:USERPROFILE/.local/share/android-agent-tools",
     [string]$Python = "$env:USERPROFILE/.local/bin/python3.14.exe",
     [switch]$NoOpen
@@ -13,6 +13,10 @@ $cloudflared = Join-Path $ToolsRoot 'cloudflared.exe'
 $publisher = Join-Path $repo 'pc/tunnel_publish.py'
 $stoppedFlag = Join-Path $statePath 'stopped.flag'
 $taskName = 'AndroidAgentPcBrainWatchdog'
+$reportScript = Join-Path $repo 'pc/weekly_report.py'
+$telemetryScript = Join-Path $repo 'pc/telemetry.py'
+$workspacePath = Join-Path $statePath 'empty-workspace'
+$reportTasks = @{ 'AndroidAgentDailyCheck' = '--daily'; 'AndroidAgentWeeklyReport' = '--weekly' }
 New-Item -ItemType Directory -Force -Path $statePath | Out-Null
 
 function OwnedProcess([string]$Name) {
@@ -29,6 +33,14 @@ function OwnedProcess([string]$Name) {
     return $process
 }
 
+function Emit([string]$Type, [string[]]$Extra = @()) {
+    # Best effort event for the PC event log (events.jsonl); never fails the watchdog.
+    try {
+        if ((Test-Path -LiteralPath $Python) -and (Test-Path -LiteralPath $workspacePath)) {
+            & $Python -X utf8 $telemetryScript --workspace $workspacePath emit $Type @Extra 2>&1 | Out-Null
+        }
+    } catch { }
+}
 function TunnelUrl {
     $log = Join-Path $statePath 'tunnel.stderr.log'
     if (!(Test-Path -LiteralPath $log)) { return $null }
@@ -55,6 +67,7 @@ function StartTunnel {
     if (!(OwnedProcess 'tunnel')) {
         $process = Start-Process -FilePath $cloudflared -ArgumentList @('tunnel', '--url', 'http://127.0.0.1:8766', '--no-autoupdate') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $statePath 'tunnel.stdout.log') -RedirectStandardError (Join-Path $statePath 'tunnel.stderr.log') -PassThru
         $process.Id | Set-Content -LiteralPath (Join-Path $statePath 'tunnel.pid')
+        Emit 'tunnel_start'
     }
 }
 function PublishUrl {
@@ -89,6 +102,35 @@ elseif ($Action -eq 'uninstall-autostart') {
     exit
 }
 
+if ($Action -eq 'install-reports') {
+    if (!(Test-Path -LiteralPath $Python)) { throw 'Python missing; pass -Python with your Python 3.11+ executable.' }
+    New-Item -ItemType Directory -Force -Path (Join-Path $workspacePath 'reports') | Out-Null
+    $triggers = @{
+        'AndroidAgentDailyCheck'   = (New-ScheduledTaskTrigger -Daily -At '09:00')
+        'AndroidAgentWeeklyReport' = (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '10:00')
+    }
+    foreach ($name in $reportTasks.Keys) {
+        $vbs = Join-Path $statePath ("$name.vbs")
+        $command = '"' + $Python + '" -X utf8 "' + $reportScript + '" --workspace "' + $workspacePath + '" ' + $reportTasks[$name]
+        $launch = 'CreateObject("WScript.Shell").Run "' + $command.Replace('"', '""') + '", 0, False'
+        Set-Content -LiteralPath $vbs -Value $launch -Encoding Unicode
+        $reportAction = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//B //Nologo "' + $vbs + '"')
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -Hidden
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $name -Action $reportAction -Trigger $triggers[$name] -Settings $settings -Principal $principal -Force | Out-Null
+    }
+    Write-Output 'Report tasks installed: AndroidAgentDailyCheck (daily 09:00, alert only past a threshold) and AndroidAgentWeeklyReport (Monday 10:00). Reports: empty-workspace/reports.'
+    $Action = 'status'
+}
+elseif ($Action -eq 'uninstall-reports') {
+    foreach ($name in $reportTasks.Keys) {
+        if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $name -Confirm:$false }
+        Remove-Item -LiteralPath (Join-Path $statePath "$name.vbs") -ErrorAction SilentlyContinue
+    }
+    Write-Output 'Report tasks removed. events.jsonl and reports/ are kept.'
+    exit
+}
+
 if ($Action -eq 'watchdog') {
     # Does nothing after an explicit "stop" (until the next "start").
     if (Test-Path -LiteralPath $stoppedFlag) { exit }
@@ -106,6 +148,7 @@ if ($Action -eq 'watchdog') {
             if ($dead) { Stop-Process -Id $dead.ProcessId }
             Start-Sleep -Seconds 2
             StartTunnel
+            Emit 'tunnel_restart' @('--flag', 'fails=3')
             Remove-Item -LiteralPath $failFile -ErrorAction SilentlyContinue
         }
     } else { Remove-Item -LiteralPath $failFile -ErrorAction SilentlyContinue }
@@ -179,6 +222,11 @@ if ($Action -eq 'pair') {
 if ($Action -eq 'status') {
     $autostart = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     Write-Output ('Autostart task: ' + $(if ($autostart) { [string]$autostart.State } else { 'not installed' }))
+    foreach ($name in ($reportTasks.Keys | Sort-Object)) {
+        $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        $next = if ($task) { (Get-ScheduledTaskInfo -TaskName $name).NextRunTime } else { $null }
+        Write-Output ("Report task ${name}: " + $(if ($task) { [string]$task.State + ', next run ' + $next } else { 'not installed' }))
+    }
     $published = Join-Path $statePath 'published-url.txt'
     if (Test-Path -LiteralPath $published) { Write-Output ('Address pinned in Telegram: ' + (Get-Content -LiteralPath $published -Raw).Trim()) }
 }
