@@ -67,6 +67,7 @@ class TelegramApi(private val token: String, private val client: OkHttpClient, p
         return json
     }
     fun identity(): JSONObject = call("getMe", emptyMap()).getJSONObject("result")
+    fun chat(chat: Long): JSONObject = call("getChat", mapOf("chat_id" to chat.toString())).getJSONObject("result")
     fun serverTimeSeconds(): Long? = clock.nowSeconds()
     fun webhookConfigured(): Boolean = call("getWebhookInfo", emptyMap()).getJSONObject("result").optString("url").isNotBlank()
     fun updates(offset: Long, timeout: Int = 45): List<JSONObject> = call("getUpdates", mapOf(

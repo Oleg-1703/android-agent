@@ -9,9 +9,15 @@ import org.json.JSONObject
 import java.time.LocalDate
 
 /** The pairing token authorizes this private PC, never a paid inference API. */
-class PcBrain(private val config: JSONObject, private val client: OkHttpClient, private val store: StateStore? = null) {
+class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private val store: StateStore? = null) {
+    /** With a store (the running agent) a dead tunnel address is replaced by the one pinned in Telegram and the same request is retried once. */
+    private val client: OkHttpClient = if (store == null) httpClient else {
+        val token = config.optString("bot_token")
+        if (token.isBlank()) httpClient else httpClient.newBuilder().addInterceptor(PcUrlInterceptor(config, PcUrlRecovery(config, store, { chat -> TelegramApi(token, httpClient).chat(chat) }))).build()
+    }
     private fun plans(): PhonePlanQueue {
-        val identity = config.optString("pc_url") + ":" + config.optString("pc_pairing") + ":" + config.optString("bot_token") + ":" + config.optString("chat_id")
+        // The address is not part of the scope: it changes with every tunnel restart and must not orphan queued plans.
+        val identity = config.optString("pc_pairing") + ":" + config.optString("bot_token") + ":" + config.optString("chat_id")
         val scope = java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
         return PhonePlanQueue(requireNotNull(store), scope)
     }
@@ -180,8 +186,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
                 phoneRunner(phoneStage, requireNotNull(executeOnPhone)).status(id)?.let { return receipt(it) }
                 plans().add(id, result)
                 val completed = resumePhone(phoneReady, phoneStage, phoneSession, requireNotNull(executeOnPhone))
-                val pending = if (plans().contains(id) && requireNotNull(store).get("write_intent").isNotBlank()) "Еда распознана и сохранена в очередь. Предыдущая запись не проверена: сначала сверь её в FatSecret и сними блокировку в приложении. Новую еду повторно отправлять не нужно."
-                else if (plans().contains(id)) "ИИ распознал еду. План сохранён в очередь. Можно выключить экран. Запишу автоматически после разблокировки телефона; повторно отправлять еду не нужно."
+                val pending = if (plans().contains(id)) "ИИ распознал еду. План сохранён в очередь. Можно выключить экран. Запишу автоматически после разблокировки телефона; повторно отправлять еду не нужно."
                 else ""
                 MealTable.join(completed + listOf(pending).filter { it.isNotBlank() })
             } else receipt(result)
@@ -198,9 +203,7 @@ class PcBrain(private val config: JSONObject, private val client: OkHttpClient, 
     fun jobStatus(): String {
         val id = store?.get("pc_last_job").orEmpty()
         if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
-        if (plans().contains(id)) return if (requireNotNull(store).get("write_intent").isNotBlank())
-            "Новая еда распознана и ждёт в очереди. Выполнение блокирует предыдущая непроверенная попытка, а не экран телефона. Проверь дневник и сними блокировку в Android Agent. Повторно отправлять еду не нужно."
-        else "Еда распознана и ждёт готовности телефона: включённого экрана, снятой блокировки и подключённой службы управления Android Agent. Повторно отправлять не нужно."
+        if (plans().contains(id)) return "Еда распознана и ждёт готовности телефона: включённого экрана, снятой блокировки и подключённой службы управления Android Agent. Повторно отправлять не нужно."
         phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return lastRequest(receipt(it)) }
         return lastRequest(receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))))
     }

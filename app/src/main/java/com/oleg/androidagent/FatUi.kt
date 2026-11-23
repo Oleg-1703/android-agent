@@ -20,7 +20,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
     var candidateResolver: ((org.json.JSONObject, List<Row>, Boolean) -> Int?)? = null
     var searchProgress: ((String) -> Unit)? = null
     private var screenLease: ScreenLease? = null
-    fun canExecute() = FatAccessibilityService.instance != null &&
+    fun canExecute() = (FatAccessibilityService.instance != null || AccessibilityGuard.current?.ensure() == true) &&
         context.getSystemService(android.os.PowerManager::class.java).isInteractive &&
         !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
     fun <T> withExecutionScreen(block: () -> T): T {
@@ -107,7 +107,12 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         }
         throw IllegalArgumentException("FatSecret не открыл ожидаемый экран. Запрос остановлен. Проверь дневник перед повторной отправкой; автоматического повтора не было.")
     }
-    fun requireReady() = main {
+    fun requireReady() {
+        // Outside main(): re-enabling may wait for the system and the outage message uses the network.
+        if (FatAccessibilityService.instance == null) AccessibilityGuard.current?.ensure()
+        requireReadyOnMain()
+    }
+    private fun requireReadyOnMain() = main {
         require(context.getSystemService(android.os.PowerManager::class.java).isInteractive) { "Включи экран телефона и открой FatSecret." }
         require(FatAccessibilityService.instance != null) { "Включи специальные возможности Android Agent в настройках телефона." }
         FatAccessibilityService.instance?.syncKeyboardPackage()
@@ -161,7 +166,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         "breakfast" -> setOf("breakfast", "завтрак")
         "lunch" -> setOf("lunch", "обед")
         "dinner" -> setOf("dinner", "ужин")
-        else -> setOf("snacks/other", "перекус/другое", "перекус", "другое")
+        else -> setOf("snacks/other", "перекус/другое", "перекус", "перекусы", "другое", "snacks", "snack", "other", "закуски")
     }
     private data class DiaryRow(val kind: String, val title: String, val detail: String, val calories: String)
     private data class Frame(val from: Int, val count: Int, val rows: List<DiaryRow?>)
@@ -252,14 +257,15 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         val date = java.time.LocalDate.now().toString()
         diary(); requireToday()
         fun section(rows: Map<Int, DiaryRow>): List<Pair<Int, DiaryRow>> {
-            val heading = rows.entries.single { it.value.kind == "heading" && it.value.title.lowercase() in labels(meal) }.key
+            val heading = rows.entries.singleOrNull { it.value.kind == "heading" && it.value.title.lowercase() in labels(meal) }?.key
+                ?: throw DiaryReadFailure("Не найден раздел приёма пищи в дневнике FatSecret.")
             return rows.entries.dropWhile { it.key <= heading }.takeWhile { it.value.kind !in setOf("heading", "boundary") }.map { it.key to it.value }
         }
         var rows = scanDiary()
         var content = section(rows)
         if (content.isEmpty()) {
             val heading = rows.values.single { it.kind == "heading" && it.title.lowercase() in labels(meal) }
-            require(heading.calories in setOf("", "0"))
+            if (heading.calories !in setOf("", "0")) throw DiaryReadFailure("Раздел приёма пищи не раскрылся: заголовок показывает калории, строк нет.")
             require(java.time.LocalDate.now().toString() == date)
             return DiarySnapshot(date, meal, emptyList(), true)
         }
@@ -331,7 +337,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
                 "breakfast" -> setOf("breakfast", "завтрак")
                 "lunch" -> setOf("lunch", "обед")
                 "dinner" -> setOf("dinner", "ужин")
-                else -> setOf("snacks/other", "перекус/другое", "перекус", "другое")
+                else -> setOf("snacks/other", "перекус/другое", "перекус", "перекусы", "другое", "snacks", "snack", "other", "закуски")
             }
         var opened = false
         val visible = main { nodes("food_journal_heading_row_title").filter { it.text?.toString()?.lowercase() in labels } }

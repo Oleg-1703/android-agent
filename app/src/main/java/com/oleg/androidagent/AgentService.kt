@@ -88,6 +88,7 @@ class AgentService : Service() {
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
             val commands = AgentCommands(store, config, FatSecretApi(config, client), client, FatUi(this))
             var failures = 0
+            val a11y = if (config.optBoolean("pc_execute_on_phone")) AccessibilityGuard.create(this, store) { telegram.send(owner, it) }.also { AccessibilityGuard.current = it } else null
             var firstPoll = true
             fun quiet(action: () -> Unit) { try { action() } catch (_: java.io.IOException) { } catch (_: ApiFailure) { } }
             fun deliver(reply: CommandReply) {
@@ -117,6 +118,7 @@ class AgentService : Service() {
                             return
                         }
                     }
+                    a11y?.ensure()
                     // A successful getMe alone does not prove that this bot can poll.
                     waitingForPhone = commands.hasPendingPhone()
                     val updates = try {
@@ -275,6 +277,7 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         running = false
+        AccessibilityGuard.current = null
         unlockEvents?.close()
         unlockEvents = null
         workerThread?.interrupt()

@@ -18,7 +18,7 @@ class UiMealEngine(private val store: StateStore, private val ui: MealScreen,
     }
     fun prepare(meal: JSONObject): String {
         Meals.validate(meal)
-        require(store.get("write_intent").isBlank()) { "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." }
+        StaleWrite.clear(store)
         require(meal.getString("date") == LocalDate.now().toString()) { "Управление экраном пока поддерживает только сегодня." }
         require(meal.getJSONArray("items").length() == 1) { "Сейчас добавляй по одному продукту: так проще проверить каждую порцию." }
         if (store.get("ui_pending").isNotBlank()) cancel()
@@ -47,7 +47,7 @@ class UiMealEngine(private val store: StateStore, private val ui: MealScreen,
         return "Проверь запись за сегодня / ${p.getString("meal")}:\n$preview\nСохранить: /confirm $nonce\nОтмена: /cancel. Запись пока не сохранена."
     }
     fun confirm(nonce: String): String {
-        require(store.get("write_intent").isBlank()) { "Предыдущая запись ещё не проверена. Автоматического повтора не будет." }
+        StaleWrite.clear(store)
         val p = draft()
         require(p.has("nonce") && p.getString("nonce") == nonce) { "Неверный или устаревший код подтверждения." }
         require(ui.screenStamp() == p.getString("screen")) { "Экран менялся после выбора. Подготовь еду заново." }
@@ -71,7 +71,8 @@ class UiMealEngine(private val store: StateStore, private val ui: MealScreen,
             return "Сохранено и проверено в FatSecret:\n${p.getString("preview")}\nМожно отправлять следующую еду."
         }
         store.put("last_result", "Нажата кнопка сохранения FatSecret. Результат требует проверки в дневнике.")
-        return "Нажал «Сохранить» один раз. Проверь запись в дневнике FatSecret. До проверки следующая запись заблокирована; снять блокировку можно в Android Agent. Автоматического повтора нет."
+        store.put("write_intent", "")
+        return "Нажал «Сохранить» один раз. Возможно записано, проверь дневник FatSecret. Следующая запись не заблокирована; автоматического повтора нет."
     }
     fun cancel(): String {
         val raw = store.get("ui_pending")

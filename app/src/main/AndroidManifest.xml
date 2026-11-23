@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Optional: grantable only over ADB. Lets the app re-enable its own Accessibility service. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
     <queries><package android:name="com.fatsecret.android"/></queries>
     <application android:icon="@drawable/ic_agent" android:dataExtractionRules="@xml/data_extraction_rules" android:allowBackup="false" android:fullBackupContent="false" android:label="Android Agent" android:theme="@style/Theme.AndroidAgent" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">

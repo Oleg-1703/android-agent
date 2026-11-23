@@ -29,7 +29,6 @@ class PhonePlanQueue(private val store: StateStore, private val scope: String) {
             // If this commit fails, the runner's durable receipt prevents a second execution.
             save(rows().filterNot { it.getString("id") == id })
             results.add(result)
-            if (result.optString("status") == "uncertain") break
         }
         return results
     }

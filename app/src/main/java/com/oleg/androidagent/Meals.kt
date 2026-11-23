@@ -57,7 +57,7 @@ class MealEngine(private val store: StateStore, private val api: DiaryApi, priva
     }
     fun prepare(meal: JSONObject): String {
         Meals.validate(meal)
-        require(store.get("write_intent").isBlank()) { "Предыдущая запись не проверена. Проверь дневник FatSecret и сними блокировку в приложении." }
+        StaleWrite.clear(store)
         store.put("pending", "")
         val items = meal.getJSONArray("items")
         val lines = mutableListOf("Выбери точный продукт для каждой позиции:")
@@ -103,7 +103,7 @@ class MealEngine(private val store: StateStore, private val api: DiaryApi, priva
     }
     fun cancel(): String { store.put("pending", ""); return "Подготовленная еда отменена. Существующие и непроверенные записи в дневнике сохранены." }
     fun confirm(nonce: String): String {
-        require(store.get("write_intent").isBlank()) { "Есть непроверенная запись. Сначала проверь дневник и сними блокировку в приложении." }
+        StaleWrite.clear(store)
         val p = pending()
         require(p.getString("nonce") == nonce) { "Неверный или устаревший код подтверждения" }
         val items = p.getJSONArray("items")
@@ -130,7 +130,7 @@ class MealEngine(private val store: StateStore, private val api: DiaryApi, priva
                 store.put("last_result", "Проверено $verified/${items.length()} записей за ${p.getString("date")}; ID последней записи $id")
                 store.put("write_intent", "")
             } catch (_: Exception) {
-                return "Остановлено: проверено $verified/${items.length()} записей. Продукт ${i+1} мог сохраниться. Повтора не будет. Проверь дневник FatSecret и сними блокировку в приложении. Отправь заново только недостающие продукты."
+                return "Остановлено: проверено $verified/${items.length()} записей. Продукт ${i+1} мог сохраниться. Повтора не будет. Проверь дневник FatSecret; следующая запись не заблокирована. Отправь заново только недостающие продукты."
             }
         }
         return "Сохранено и проверено $verified записей в существующем дневнике FatSecret (${p.getString("date")}, ${p.getString("meal")})."

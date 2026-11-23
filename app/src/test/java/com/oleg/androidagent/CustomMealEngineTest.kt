@@ -81,10 +81,14 @@ class CustomMealEngineTest {
         assertEquals("complete", engine.log(meal).getString("status"))
         assertEquals(0, screen.creations); assertEquals(1, screen.existingSelections); assertEquals(1, screen.saves)
     }
-    @Test fun incompleteDiaryPreventsAllWrites() {
+    @Test fun incompleteBeforeSnapshotStillWritesAndReportsUncertain() {
         screen.complete = false
-        try { engine.log(plan()); fail() } catch (_: IllegalArgumentException) {}
-        assertEquals(0, screen.creations)
+        val result = engine.log(plan())
+        assertEquals("uncertain", result.getString("status"))
+        assertEquals(1, screen.creations); assertEquals(1, screen.saves)
+        assertTrue(result.getString("message").contains("Возможно записано, проверь дневник"))
+        assertTrue(result.getString("message").contains("прочитан не полностью"))
+        assertEquals("", store.get("write_intent"))
     }
     @Test fun prewriteReadFailureReportsNoWriteAndKeepsNoJournal() {
         var reads = 0
@@ -94,11 +98,11 @@ class CustomMealEngineTest {
                 throw IllegalArgumentException("Missing adapter row")
             }
         }
-        try { CustomMealEngine(store, failing) {}.log(plan()); fail() }
-        catch (error: IllegalArgumentException) { assertTrue(error.message.orEmpty().contains("Эта еда не добавлена")) }
+        val result = CustomMealEngine(store, failing) {}.log(plan())
+        assertEquals("uncertain", result.getString("status"))
         assertEquals(3, reads)
-        assertEquals(0, screen.creations)
-        assertEquals(0, screen.saves)
+        assertEquals(1, screen.creations)
+        assertEquals(1, screen.saves)
         assertEquals("", store.get("write_intent"))
     }
     @Test fun exhaustedDiaryScanDoesNotRepeatTheSameTraversal() {
@@ -109,11 +113,10 @@ class CustomMealEngineTest {
                 throw DiaryReadFailure("Missing row after both bounded passes")
             }
         }
-        try { CustomMealEngine(store, failing) {}.log(plan()); fail() }
-        catch (error: IllegalArgumentException) { assertTrue(error.message.orEmpty().contains("Эта еда не добавлена")) }
+        val result = CustomMealEngine(store, failing) {}.log(plan())
+        assertEquals("uncertain", result.getString("status"))
         assertEquals(1, reads)
-        assertEquals(0, screen.creations)
-        assertEquals(0, screen.saves)
+        assertEquals(1, screen.saves)
         assertEquals("", store.get("write_intent"))
     }
     @Test fun progressSeparatesReadingWritingAndVerification() {
@@ -131,11 +134,27 @@ class CustomMealEngineTest {
         assertEquals(0, screen.saves)
         assertTrue(store.get("write_intent").isNotBlank())
     }
-    @Test fun uncertainResultCannotReplayAfterRecreation() {
+    @Test fun unverifiedSaveIsUncertainNotAFailureAndDoesNotBlockTheNextRequest() {
         screen.uncertain = true
-        try { engine.log(plan()); fail() } catch (_: IllegalArgumentException) {}
-        try { CustomMealEngine(store, screen).log(plan()); fail() } catch (_: IllegalArgumentException) {}
-        assertEquals(1, screen.saves); assertEquals(1, screen.creations)
+        val first = engine.log(plan())
+        assertEquals("uncertain", first.getString("status"))
+        assertEquals(0, first.getJSONArray("receipts").length())
+        assertTrue(first.getString("message").contains("Возможно записано, проверь дневник"))
+        assertEquals("", store.get("write_intent"))
+        screen.uncertain = false
+        // A different request is not blocked; the first one was saved exactly once and never replayed by itself.
+        assertEquals(1, screen.saves)
+        val second = CustomMealEngine(store, screen) {}.log(plan())
+        assertEquals(2, screen.saves); assertEquals(2, screen.creations)
+        assertNotNull(second)
+    }
+    @Test fun staleJournalIsClearedWhenANewRequestStartsAndNotedInItsReceipt() {
+        store.put("write_intent", JSONObject().put("mode", "custom").put("preview", "Old food: 100 g\n90 ккал").toString())
+        val result = engine.log(plan())
+        assertEquals("complete", result.getString("status"))
+        assertTrue(result.getString("notes").contains("Предыдущая запись осталась не сверена (Old food: 100 g)"))
+        assertEquals("", store.get("write_intent"))
+        assertEquals(1, screen.saves)
     }
     @Test fun missingMacrosDoNotStartScreenExecution() {
         val meal = plan(); meal.getJSONArray("items").getJSONObject(0).remove("nutrition")

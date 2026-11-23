@@ -47,17 +47,17 @@
     <string name="start_refused">Android не разрешил запуск службы. Откройте приложение на экране и повторите.</string>
     <string name="stop_requested">Останавливаю агента…</string>
 
-    <string name="write_title">Запись в дневник под вопросом</string>
-    <string name="write_body">Прошлая запись могла пройти не до конца. Откройте FatSecret, проверьте дневник вручную и только потом снимите блокировку. Приложение ничего не повторяет и не удаляет само.</string>
-    <string name="write_ack">Я проверил дневник - снять блокировку</string>
+    <string name="write_title">Последняя запись не сверена</string>
+    <string name="write_body">Дневник не удалось сверить после последней записи: возможно, еда записана. Новые запросы это не блокирует; при следующей записи пометка уберётся сама. Проверьте дневник FatSecret, чтобы не было дубля. Приложение ничего не повторяет и не удаляет само.</string>
+    <string name="write_ack">Убрать пометку</string>
     <string name="write_stopping">Агент останавливается. Дождитесь остановки, проверьте дневник и нажмите кнопку ещё раз.</string>
     <string name="write_dialog1_title">Сначала проверьте FatSecret</string>
-    <string name="write_dialog1_body">Это только снимает блокировку записи. Ничего не повторяется, не удаляется и не проверяется. Найдите частичные или дублирующиеся записи вручную и отправляйте боту только недостающие продукты новой командой.</string>
+    <string name="write_dialog1_body">Это только убирает пометку. Ничего не повторяется, не удаляется и не проверяется. Найдите частичные или дублирующиеся записи вручную.</string>
     <string name="write_dialog1_ok">Дальше</string>
     <string name="write_dialog2_title">Подтвердите ещё раз</string>
     <string name="write_dialog2_body">Вы сами проверили дневник FatSecret и готовы продолжить?</string>
     <string name="write_dialog2_ok">Да, я проверил дневник</string>
-    <string name="write_cleared">Блокировка снята. Запустите агента и отправьте только недостающие продукты.</string>
+    <string name="write_cleared">Пометка убрана.</string>
 
     <string name="setup_title">Настройка</string>
     <string name="setup_done">Telegram готов - агента можно запускать. FatSecret и ИИ необязательны.</string>
@@ -204,7 +204,7 @@
     <string name="diag_chat">ID чата задан</string>
     <string name="diag_accessibility">Специальные возможности включены</string>
     <string name="diag_pc">Настройки ИИ по подписке сохранены</string>
-    <string name="diag_write">Блокировка неясной записи</string>
+    <string name="diag_write">Есть несверенная запись</string>
     <string name="diag_notif">Уведомления разрешены</string>
     <string name="diag_battery">Без ограничений батареи</string>
     <string name="diag_updated">Обновлено</string>

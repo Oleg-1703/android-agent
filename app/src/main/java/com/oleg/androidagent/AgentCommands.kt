@@ -33,7 +33,7 @@ class AgentCommands(
     fun resumePhone(telegram: TelegramApi): List<CommandReply> {
         if (!hasPendingPhone()) return emptyList()
         val screen = requireNotNull(ui)
-        return PcBrain(config, client, store).resumePhone({ screen.canExecute() && store.get("write_intent").isBlank() },
+        return PcBrain(config, client, store).resumePhone({ screen.canExecute() },
             { screen.searchState + " " + screen.diaryRangeState }, { screen.withExecutionScreen(it) }) { plan ->
             CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
         }.map { CommandReply.of(it) }
@@ -64,7 +64,7 @@ class AgentCommands(
             )
             command == "/status" || natural == "статус" -> return CommandReply(
                 "Агент работает. " + (if (store.get("write_intent").isNotBlank())
-                    "Есть непроверенная запись: проверь дневник и сними блокировку в приложении. " else "Непроверенных записей нет. ") +
+                    "Последняя запись не сверена: проверь дневник. Новые запросы это не блокирует. " else "Непроверенных записей нет. ") +
                     (if (!apiConnected) "Управление экраном FatSecret ещё в разработке. " else "Экспериментальный API FatSecret настроен. ") + store.get("last_result")
             )
             command == "/stop" -> return CommandReply("Агент остановлен. Запустить снова можно в приложении на телефоне.", stop = true)
@@ -125,7 +125,7 @@ class AgentCommands(
         val batch = if (message.has("agent_batch")) message.objects("agent_batch") else listOf(message)
         if (config.optBoolean("pc_consent") && MealBatch.eligible(message)) return try {
             val submitted = brain.submit(batch, telegram, phoneStage = { screen.searchState + " " + screen.diaryRangeState }, progress = progress(telegram),
-                phoneReady = { screen.canExecute() && store.get("write_intent").isBlank() }, phoneSession = { screen.withExecutionScreen(it) }) { plan ->
+                phoneReady = { screen.canExecute() }, phoneSession = { screen.withExecutionScreen(it) }) { plan ->
                 CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
             }
             // Any meal answer that is not a new draft (receipt, question, "ок") retires the buttons of the previous draft.
@@ -147,7 +147,7 @@ class AgentCommands(
             command == "/status" || natural == "статус" -> CommandReply(
                 "Telegram на связи. FatSecret: управление экраном. " +
                     (if (FatAccessibilityService.instance != null) "Специальные возможности включены. " else "Включи специальные возможности Android Agent. ") +
-                    (if (store.get("write_intent").isNotBlank()) "Есть непроверенная запись. Проверь дневник и сними блокировку в приложении." else "Непроверенных записей нет.")
+                    (if (store.get("write_intent").isNotBlank()) "Последняя запись не сверена: проверь дневник. Новые запросы это не блокирует." else "Непроверенных записей нет.")
             )
             command == "/stop" || natural == "останови агента" -> CommandReply("Агент остановлен. Запуск - в приложении.", stop = true)
             command == "/cancel" || natural in setOf("отмена", "отмени", "отмени черновик") -> {
@@ -203,7 +203,6 @@ class AgentCommands(
         }
     }
     private fun requireUiPlanning(screen: FatUi) {
-        require(store.get("write_intent").isBlank()) { "Есть непроверенная запись. Сначала проверь дневник и сними блокировку в приложении. ИИ пока не вызывался." }
         screen.requireReady()
     }
 }

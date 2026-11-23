@@ -136,6 +136,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        if (FatAccessibilityService.instance == null) try { AccessibilityGuard.enableSelf(this) } catch (_: Exception) { }
         if (diagnosticsOpen) window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         handler.removeCallbacks(tick); handler.post(tick)
     }

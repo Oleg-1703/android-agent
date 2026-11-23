@@ -99,8 +99,7 @@ class CoreTest {
         assertTrue(e.confirm(code).contains("мог сохраниться"));assertEquals(1,api.writes);assertTrue(s.get("write_intent").isNotBlank())
         val restarted=MealEngine(s,api)
         assertThrows(IllegalArgumentException::class.java) {restarted.confirm(code)}
-        assertThrows(IllegalArgumentException::class.java) {restarted.prepare(Meals.parse("/meal 2026-11-12 lunch chicken=200"))}
-        restarted.cancel();assertTrue(s.get("write_intent").isNotBlank());assertEquals(1,api.writes)
+        assertEquals("",s.get("write_intent"));restarted.cancel();assertEquals(1,api.writes)
     }
     @Test fun verificationMismatchRetainsBlock() {
         val s=MemoryStore();val api=FakeDiary();val(e,code)=ready(s,api);api.failVerification=true

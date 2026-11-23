@@ -80,10 +80,22 @@ class UiMealEngineTest {
         fails { UiMealEngine(store, screen).confirm(nonce) }
         assertEquals(1, screen.saves)
     }
-    @Test fun cancellationRetainsUncertainWriteLock() {
-        val nonce = prepare(); engine.confirm(nonce); engine.cancel()
-        assertTrue(store.get("write_intent").isNotBlank())
+    @Test fun unverifiedSaveDoesNotLeaveALockAndTheNextPrepareIsNotBlocked() {
+        val nonce = prepare()
+        val reply = engine.confirm(nonce)
+        assertTrue(reply.contains("Возможно записано, проверь дневник"))
+        assertEquals("", store.get("write_intent"))
+        engine.cancel()
         assertEquals("", store.get("ui_pending"))
+        assertEquals(1, screen.saves)
+        prepare()
+    }
+    @Test fun staleJournalOfACrashedWriteDoesNotBlockPrepareOrConfirm() {
+        store.put("write_intent", "left by a killed process")
+        val nonce = prepare()
+        assertEquals("", store.get("write_intent"))
+        engine.confirm(nonce)
+        assertEquals(1, screen.saves)
     }
     private fun verifiedDraft(): String {
         screen.complete = true
@@ -97,21 +109,22 @@ class UiMealEngineTest {
         fails { engine.confirm(nonce) }
         assertEquals(1, screen.saves)
     }
-    @Test fun unexpectedExtraRowRetainsLock() {
+    @Test fun unexpectedExtraRowIsUncertainWithoutLock() {
         val nonce = verifiedDraft(); screen.extraRow = true
-        engine.confirm(nonce)
-        assertTrue(store.get("write_intent").isNotBlank())
+        assertTrue(engine.confirm(nonce).contains("Возможно записано"))
+        assertEquals("", store.get("write_intent"))
     }
-    @Test fun unreadableResultRetainsLock() {
+    @Test fun unreadableResultIsUncertainWithoutLock() {
         val nonce = verifiedDraft(); screen.failReadAfterSave = true
-        engine.confirm(nonce)
-        assertTrue(store.get("write_intent").isNotBlank())
+        assertTrue(engine.confirm(nonce).contains("Возможно записано"))
+        assertEquals("", store.get("write_intent"))
     }
     @Test fun failureClearingVerifiedJournalStillPreventsReplay() {
         val nonce = verifiedDraft(); store.failClearJournal = true
         try { engine.confirm(nonce); fail() } catch (_: IllegalStateException) {}
         assertTrue(store.get("write_intent").isNotBlank())
-        fails { engine.confirm(nonce) }
+        // The same draft is consumed: it can never be saved a second time, even though the journal could not be cleared.
+        try { engine.confirm(nonce); fail() } catch (_: RuntimeException) {}
         assertEquals(1, screen.saves)
     }
     @Test fun transientReadbackRetriesOnlyReadingAndSavesExactlyOnce() {

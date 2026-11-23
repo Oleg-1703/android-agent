@@ -26,15 +26,16 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
     private val progress: (String) -> Unit = {},
     private val pause: () -> Unit = { Thread.sleep(700) }) {
     private fun beforeSnapshot(meal: String): DiarySnapshot {
-        var failure: IllegalArgumentException? = null
+        var failure: Exception? = null
         for (attempt in 0 until 3) {
             if (attempt > 0) pause()
-            try { return ui.snapshot(meal) } catch (error: IllegalArgumentException) {
+            try { return ui.snapshot(meal) } catch (error: Exception) {
+                if (error is InterruptedException) throw error
                 failure = error
                 if (error is DiaryReadFailure) break
             }
         }
-        throw IllegalArgumentException("Не удалось прочитать дневник перед записью. Эта еда не добавлена.", failure)
+        throw IllegalArgumentException("Не удалось прочитать дневник перед записью.", failure)
     }
     fun reconcile(): JSONObject {
         val journal = JSONObject(store.get("write_intent"))
@@ -81,18 +82,24 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
     fun log(plan: JSONObject): JSONObject {
         Meals.validate(plan)
         require(plan.getString("date") == LocalDate.now().toString()) { "Пока поддерживается только сегодняшний дневник." }
-        require(store.get("write_intent").isBlank()) { "Предыдущая запись не проверена. Повторное сохранение заблокировано." }
+        val notes = mutableListOf<String>()
+        StaleWrite.clear(store)?.let { notes.add(it) }
         plan.objects("items").forEach {
             if (it.optString("source") in setOf("existing", "saved")) require(!it.has("nutrition") && !it.has("barcode"))
             else { require(it.has("nutrition")) { "Для своей еды нужны КБЖУ." }; MealNutrition.validate(it) }
         }
         val items = WholeMeal.items(plan)
         val receipts = org.json.JSONArray()
+        val unverified = mutableListOf<String>()
         store.put("custom_receipts", receipts.toString())
         for (item in items) {
             progress("ИИ разобрал запрос. Открываю FatSecret и читаю дневник перед записью.")
-            val before = beforeSnapshot(plan.getString("meal"))
-            require(before.complete) { "Не удалось полностью прочитать дневник перед записью. Ничего нового не сохранено." }
+            // An unreadable diary does not stop the write (a duplicate is cheap); it only makes verification impossible.
+            val before = try { beforeSnapshot(plan.getString("meal")).takeIf { it.complete } } catch (error: IllegalArgumentException) { null }
+                ?: DiarySnapshot(LocalDate.now().toString(), plan.getString("meal"), emptyList(), false).also {
+                    val note = "Дневник перед записью прочитан не полностью, поэтому записанное нельзя сверить автоматически."
+                    if (note !in notes) notes.add(note)
+                }
             store.put("write_intent", JSONObject().put("mode", "custom").put("execution_id", plan.optString("_execution_id")).put("item", item).put("before", before.json()).toString())
             val saved = item.optString("source") == "saved"
             val existing = item.optString("source") in setOf("existing", "saved")
@@ -127,18 +134,26 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             else ui.save(preview, ui.screenStamp(), JSONObject(store.get("write_intent")).getString("context"))
             progress("Сохранение отправлено. Проверяю запись в дневнике; повторно сохранять не буду.")
             var verified = false
-            for (attempt in 0 until 3) {
+            if (before.complete) for (attempt in 0 until 3) {
                 if (attempt > 0) pause()
-                val after = try { ui.snapshot(plan.getString("meal")) } catch (_: IllegalArgumentException) { null }
+                val after = try { ui.snapshot(plan.getString("meal")) } catch (error: Exception) { if (error is InterruptedException) throw error; null }
                 if (after != null && (savedDraft?.verified(before, after) ?: DiaryVerification.addedExactly(before, after, preview, diaryName))) { verified = true; break }
             }
-            require(verified) { "Сохранение выполнено один раз, но дневник не удалось сверить. Проверь FatSecret; автоматически не повторяю." }
-            receipts.put(JSONObject().put("preview", preview).put("source", item.optString("source", "user")))
-            store.put("custom_receipts", receipts.toString())
-            store.put("last_result", preview)
+            if (verified) {
+                receipts.put(JSONObject().put("preview", preview).put("source", item.optString("source", "user")))
+                store.put("custom_receipts", receipts.toString())
+                store.put("last_result", preview)
+            } else {
+                // Save was pressed exactly once. Unreadable or unmatched diary = uncertain, never a failure and never a lock.
+                unverified.add(preview.substringBefore('\n'))
+                store.put("last_result", "Возможно записано (дневник не сверен): " + preview.substringBefore('\n'))
+            }
             store.put("write_intent", "")
         }
-        val notes = listOf(plan.optString("notes"), WholeMeal.composition(plan)).filter { it.isNotBlank() }.joinToString("\n")
-        return JSONObject().put("status", "complete").put("receipts", receipts).put("notes", notes)
+        if (unverified.isNotEmpty()) return JSONObject().put("status", "uncertain").put("receipts", receipts)
+            .put("message", "Возможно записано, проверь дневник FatSecret: " + unverified.joinToString("; ") + ". Дневник не удалось сверить; повторно не записываю. Новые запросы не заблокированы." +
+                notes.joinToString("") { "\n$it" })
+        val allNotes = (listOf(plan.optString("notes"), WholeMeal.composition(plan)) + notes).filter { it.isNotBlank() }.joinToString("\n")
+        return JSONObject().put("status", "complete").put("receipts", receipts).put("notes", allNotes)
     }
 }

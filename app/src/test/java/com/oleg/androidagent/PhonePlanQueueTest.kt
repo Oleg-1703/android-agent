@@ -55,12 +55,12 @@ class PhonePlanQueueTest {
         assertEquals(1, queue.drain({ true }, runner::run).size)
         assertEquals(1, writes)
     }
-    @Test fun uncertainResultStopsTheRestOfTheQueue() {
+    @Test fun uncertainResultDoesNotStopTheRestOfTheQueue() {
         val queue = PhonePlanQueue(Store(), "scope")
         queue.add("a".repeat(64), prepared()); queue.add("b".repeat(64), prepared())
         var calls = 0
-        assertEquals(1, queue.drain({ true }) { _, _ -> calls++; JSONObject().put("status", "uncertain") }.size)
-        assertEquals(1, calls)
-        assertTrue(queue.contains("b".repeat(64)))
+        assertEquals(2, queue.drain({ true }) { _, _ -> calls++; JSONObject().put("status", "uncertain") }.size)
+        assertEquals(2, calls)
+        assertFalse(queue.contains("b".repeat(64)))
     }
 }

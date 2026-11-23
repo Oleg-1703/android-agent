@@ -87,10 +87,21 @@ class PhoneMealRunnerTest {
         try { runner().run(id, prepared().put("target", "emulator")); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(0, claims); assertEquals(0, writes)
     }
-    @Test fun unresolvedPreviousWritePreventsNewClaim() {
+    @Test fun unresolvedPreviousWriteDoesNotBlockTheNewRequestAndIsNotedInItsReceipt() {
         store.put("write_intent", "previous uncertain write")
-        try { runner().run(id, prepared()); fail() } catch (_: IllegalArgumentException) {}
-        assertEquals(0, claims); assertEquals(0, writes)
+        val result = runner().run(id, prepared())
+        assertEquals("complete", result.getString("status"))
+        assertTrue(result.getString("notes").contains("Предыдущая запись осталась не сверена"))
+        assertEquals("", store.get("write_intent"))
+        assertEquals(1, claims); assertEquals(1, writes)
+    }
+    @Test fun noteOfAStaleWriteIsInTheMessageOfAnUncertainReceipt() {
+        store.put("write_intent", "previous uncertain write")
+        val result = PhoneMealRunner(store, remote) { JSONObject().put("status", "uncertain").put("receipts", org.json.JSONArray()).put("message", "Возможно записано") }.run(id, prepared())
+        assertEquals("uncertain", result.getString("status"))
+        assertTrue(result.getString("message").startsWith("Возможно записано"))
+        assertTrue(result.getString("message").contains("Предыдущая запись осталась не сверена"))
+        assertFalse(result.has("stale_note"))
     }
     @Test fun cancellingUnstartedPlanPreservesAnUncertainOlderWrite() {
         store.put("write_intent", "previous uncertain write")
