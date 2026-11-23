@@ -1,0 +1,76 @@
+{
+ "name": "library_save_then_reuse",
+ "about": "'запомни' saves a store product; the next turn reuses it by an alias: prepared at once, own separate card",
+ "images": {},
+ "turns": [
+  {
+   "text": "запомни ролл цезарь Small Food: на 100 г 220 ккал, белки 9, жиры 10, углеводы 23",
+   "model": {
+    "kind": "chat",
+    "reply": "Запомнить.",
+    "meal": null,
+    "library": [
+     {
+      "action": "save",
+      "name": "Ролл цезарь Small Food",
+      "aliases": [
+       "ролл цезарь"
+      ],
+      "nutrition": {
+       "basis_grams": "100",
+       "calories": "220",
+       "protein": "9",
+       "fat": "10",
+       "carbs": "23"
+      },
+      "note": "магазинный"
+     }
+    ]
+   },
+   "expect": {
+    "outcome": "reply",
+    "model_called": true,
+    "prompt_contains": [
+     "Библиотека сохранённых продуктов: пока пуста"
+    ],
+    "reply_contains": [
+     "Сохранил в библиотеке"
+    ],
+    "library_has": [
+     "ролл цезарь"
+    ]
+   }
+  },
+  {
+   "at": 5,
+   "text": "ролл цезарь 200 г",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "ролл цезарь",
+       "grams": "200",
+       "grams_source": "stated",
+       "source": "library"
+      }
+     ],
+     "notes": ""
+    }
+   },
+   "expect": {
+    "outcome": "prepared",
+    "model_called": true,
+    "prompt_contains": [
+     "Ролл цезарь"
+    ],
+    "plan_separate": [
+     true
+    ]
+   }
+  }
+ ]
+}

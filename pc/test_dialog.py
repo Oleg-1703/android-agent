@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import brain
+from food_library import FoodLibrary
 from meal_jobs import MealJobs
 from meal_thread import MealThreads
 import dialog_runner
@@ -233,6 +234,7 @@ class ServerFlow(unittest.TestCase):
         server.busy = threading.Lock()
         server.jobs = MealJobs(Path(directory.name) / "jobs.sqlite", lambda payload: {"status": "complete"})
         server.threads = MealThreads(Path(directory.name) / "t.sqlite", Path(directory.name) / "thread-images")
+        server.library = FoodLibrary(Path(directory.name) / "library.sqlite")
         self.addCleanup(server.jobs.close)
         self.searches, self.calls, self.answers, self.counter = [], [], [], 0
 
@@ -374,7 +376,7 @@ class ServerFlow(unittest.TestCase):
 
     def test_catalog_flag_selects_schema_and_prompt(self):
         enum = lambda schema: schema["properties"]["meal"]["anyOf"][0]["properties"]["items"]["items"]["properties"]["source"]["enum"]
-        self.assertEqual(enum(brain.build_schema(False)), ["user", "label", "estimate", "barcode"])
+        self.assertEqual(enum(brain.build_schema(False)), ["user", "label", "estimate", "barcode", "library"])
         self.assertIn("existing", enum(brain.build_schema(True)))
         self.assertIn("Never use source=existing", brain.build_system(False))
         self.assertIn("source=saved", brain.build_system(True))
@@ -394,6 +396,92 @@ class ServerFlow(unittest.TestCase):
         self.server.config = {"phone_catalog": True}
         self.answers.append(answer)
         self.assertEqual(self.send("бешбармак 2")["status"], "prepared")
+
+    ROLL = {"action": "save", "name": "Ролл цезарь", "aliases": ["цезарь ролл"],
+            "nutrition": {"basis_grams": "100", "calories": "220", "protein": "9", "fat": "10", "carbs": "23"}, "default_grams": "180"}
+
+    def test_library_action_saves_at_once_and_is_acknowledged(self):
+        self.answers.append({"kind": "chat", "reply": "Ок.", "meal": None, "library": [self.ROLL]})
+        result = self.send("запомни ролл")
+        self.assertIn("Сохранил в библиотеке: Ролл цезарь", result["message"])
+        self.assertEqual(self.server.library.find("цезарь ролл")["default_grams"], "180")
+        self.answers.append({"kind": "chat", "reply": "", "meal": None, "library": [{"action": "delete", "name": "ролл ЦЕЗАРЬ!"}]})
+        self.assertIn("Удалил", self.send("забудь ролл")["message"])
+        self.assertIsNone(self.server.library.find("Ролл цезарь"))
+
+    def test_invalid_library_action_is_refused_and_reported(self):
+        bad = {**self.ROLL, "nutrition": {**self.ROLL["nutrition"], "basis_grams": "0"}}
+        self.answers.append({"kind": "chat", "reply": "Ок.", "meal": None, "library": [bad]})
+        self.assertIn("Не сохранил", self.send("запомни")["message"])
+        self.assertEqual(self.server.library.all(), [])
+
+    def test_library_item_gets_exact_values_separate_flag_and_default_grams(self):
+        self.server.library.save(self.ROLL)
+        self.answers.append(meal_answer({"query": "цезарь ролл", "source": "library", "nutrition": {"basis_grams": "1", "calories": "999", "protein": "0", "fat": "0", "carbs": "0"}}))
+        result = self.send("мой ролл")
+        self.assertEqual(result["status"], "failed")  # the amount is a default: still asked as a draft
+        item = self.server.threads.draft(self.server.threads.open_thread())["items"][0]
+        self.assertEqual((item["query"], item["grams"], item["grams_source"], item["separate"]), ("Ролл цезарь", "180", "estimate", True))
+        self.assertEqual(item["nutrition"]["calories"], "220")
+        self.assertIn("из библиотеки", result["message"])
+
+    def test_library_item_with_stated_grams_is_prepared_and_prompt_lists_the_library(self):
+        self.server.library.save(self.ROLL)
+        self.answers.append(meal_answer({"query": "Ролл цезарь", "grams": "200", "grams_source": "stated", "source": "library"}))
+        result = self.send("ролл цезарь 200 г")
+        self.assertEqual(result["status"], "prepared")
+        self.assertTrue(result["plan"]["items"][0]["separate"])
+        self.assertIn("Ролл цезарь (цезарь ролл) | на 100 г: 220 ккал", self.calls[0]["prompt"])
+
+    def test_unknown_library_name_or_missing_default_grams_asks_and_writes_nothing(self):
+        self.answers.append(meal_answer({"query": "Лазанья", "grams": "200", "grams_source": "stated", "source": "library"}))
+        result = self.send("лазанья")
+        self.assertIn("В библиотеке нет", result["message"])
+        self.assertNotIn("plan", result)
+        self.server.library.save({**self.ROLL, "default_grams": None})
+        self.answers.append(meal_answer({"query": "Ролл цезарь", "source": "library"}))
+        self.assertIn("Сколько граммов", self.send("ролл")["message"])
+
+    def test_reusable_item_is_saved_only_when_the_meal_is_prepared(self):
+        reusable = {**grams_item("Попкорн Х", "50", "user", "estimate"), "reusable": True}
+        self.answers.append(meal_answer(reusable))
+        self.send("попкорн", capabilities=[])
+        self.assertEqual(self.server.library.all(), [])
+        draft = self.server.threads.draft(self.server.threads.open_thread())
+        self.assertTrue(draft["items"][0]["separate"])
+        result = self.send("ок")
+        self.assertEqual(result["status"], "prepared")
+        self.assertIsNotNone(self.server.library.find("Попкорн Х"))
+        self.assertNotIn("reusable", result["plan"]["items"][0])
+        self.assertTrue(result["plan"]["items"][0]["separate"])
+
+    def test_reusable_estimate_is_not_saved(self):
+        def no_web(payload, schema, system):
+            raise RuntimeError("offline")
+        self.server.web_search = no_web
+        self.answers.append(meal_answer({**grams_item("Нечто", "50", "estimate", "stated"), "reusable": True}))
+        self.send("нечто")
+        self.assertIn("не сохранено", self.send("ок")["plan"]["notes"])
+        self.assertEqual(self.server.library.all(), [])
+
+    def test_library_source_counts_as_exact_in_needs_confirmation(self):
+        exact = {"query": "Aa", "grams": "1", "source": "library", "grams_source": "stated"}
+        self.assertFalse(brain.needs_confirmation(plan(exact)))
+        self.assertTrue(brain.needs_confirmation(plan(exact, grams_item("E", "1", "estimate", "stated"))))
+        self.assertTrue(brain.needs_confirmation(plan({**exact, "grams_source": "estimate"})))
+
+    def test_validate_plan_accepts_separate_and_rejects_unknown_source(self):
+        from meal_jobs import validate_plan
+        good = grams_item("Aa", "10", "library", "stated")
+        validate_plan(plan({**good, "separate": True}))
+        for bad in ({**good, "source": "invented"}, {**good, "separate": "yes"}):
+            with self.assertRaises(ValueError):
+                validate_plan(plan(bad))
+
+    def test_table_marks_library_rows(self):
+        row = {**grams_item("A", "100", "library", "stated"), "separate": True}
+        self.assertIn("из библиотеки", table(plan(row)))
+        self.assertTrue(table_rows(plan(row))["rows"][0]["separate"])
 
     def test_cancel_endpoint_target_closes_the_thread(self):
         self.answers.append(self.estimates())

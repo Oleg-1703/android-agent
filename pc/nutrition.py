@@ -68,7 +68,7 @@ def enrich(plan, text, search):
     return plan
 
 
-SOURCE_TAG = {"user": "ваши данные", "label": "этикетка", "barcode": "штрихкод", "web": "сайт",
+SOURCE_TAG = {"user": "ваши данные", "label": "этикетка", "barcode": "штрихкод", "web": "сайт", "library": "из библиотеки",
               "estimate": "⚠ оценка, точных данных не нашёл"}
 
 
@@ -116,7 +116,8 @@ def table_rows(plan):
         grams_total += amount
         rows.append({"name": item["query"], "grams": f"{amount:f}", "kcal": int(f"{values['calories']:.0f}"),
                      "protein": float(f"{values['protein']:.1f}"), "fat": float(f"{values['fat']:.1f}"),
-                     "carbs": float(f"{values['carbs']:.1f}"), "estimate": item.get("source") == "estimate", "catalog": False})
+                     "carbs": float(f"{values['carbs']:.1f}"), "estimate": item.get("source") == "estimate", "catalog": False,
+                     **({"separate": True} if item.get("separate") else {})})
     return {"rows": rows, "skipped_catalog": skipped,
             "total": {"grams": f"{grams_total:f}", "kcal": int(f"{total['calories']:.0f}"),
                       "protein": float(f"{total['protein']:.1f}"), "fat": float(f"{total['fat']:.1f}"),

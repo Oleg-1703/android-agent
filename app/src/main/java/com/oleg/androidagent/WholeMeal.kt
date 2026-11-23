@@ -4,11 +4,17 @@ import org.json.JSONObject
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-/** Sum consumed portions before creating one custom card; existing-card requests remain separate. */
+/**
+ * Sum consumed portions before creating one custom card; existing-card requests and library items (`separate=true`)
+ * stay separate cards of their own, named by their stable query.
+ */
 object WholeMeal {
+    private val catalog = setOf("existing", "saved")
+    private fun separate(item: JSONObject) = item.optString("source") in catalog || item.optBoolean("separate", false)
     fun items(plan: JSONObject): List<JSONObject> {
         val items = plan.objects("items")
-        val custom = items.filter { it.optString("source") !in setOf("existing", "saved") }
+        items.filter { it.optBoolean("separate", false) && it.optString("source") !in catalog }.forEach { MealNutrition.validate(it) }
+        val custom = items.filter { !separate(it) }
         if (custom.size < 2) return items
         val grams = custom.sumOf { it.getString("grams").toBigDecimal() }
         require(grams > BigDecimal.ZERO && grams <= BigDecimal("5000")) { "Общий вес приёма пищи должен быть не больше 5000 г." }
@@ -35,12 +41,12 @@ object WholeMeal {
         MealNutrition.validate(combined)
         var inserted = false
         return items.mapNotNull {
-            if (it.optString("source") in setOf("existing", "saved")) it
+            if (separate(it)) it
             else if (!inserted) { inserted = true; combined } else null
         }
     }
     fun composition(plan: JSONObject): String {
-        val custom = plan.objects("items").filter { it.optString("source") !in setOf("existing", "saved") }
+        val custom = plan.objects("items").filter { !separate(it) }
         return if (custom.size < 2) "" else "Состав: " + custom.joinToString(", ") { "${it.getString("query")} ${it.getString("grams")} г" }
     }
 }

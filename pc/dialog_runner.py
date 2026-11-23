@@ -59,6 +59,7 @@ def run_dialog(dialog, real=False, cli="claude"):
         server.busy = threading.Lock()
         server.jobs = MealJobs(Path(directory) / "jobs.sqlite", lambda payload: {"status": "complete"})
         server.threads = brain.MealThreads(Path(directory) / "thread.sqlite", Path(directory) / "thread-images")
+        server.library = brain.FoodLibrary(Path(directory) / "food-library.sqlite")
 
         def web(payload, schema, system):
             raise RuntimeError("no web in dialog runs")
@@ -132,6 +133,21 @@ def check(expect, result, calls, server):
     for part in expect.get("items_include", []):
         if part.lower() not in names:
             problems.append(f"items lack {part!r}: {names}")
+    if "plan_separate" in expect:
+        got_separate = [bool(item.get("separate")) for item in (plan or {}).get("items", [])]
+        if got_separate != expect["plan_separate"]:
+            problems.append(f"separate flags {got_separate}, expected {expect['plan_separate']}")
+    for name in expect.get("plan_kcal", {}):
+        rows = [item for item in (plan or {}).get("items", []) if item.get("query") == name]
+        total = round(float(rows[0]["grams"]) * float(rows[0]["nutrition"]["calories"]) / float(rows[0]["nutrition"]["basis_grams"])) if rows else None
+        if total != expect["plan_kcal"][name]:
+            problems.append(f"{name} kcal {total}, expected {expect['plan_kcal'][name]}")
+    for name in expect.get("library_has", []):
+        if not server.library.find(name):
+            problems.append(f"library lacks {name!r}")
+    for name in expect.get("library_lacks", []):
+        if server.library.find(name):
+            problems.append(f"library has {name!r}")
     for part in expect.get("items_exclude", []):
         if part.lower() in names:
             problems.append(f"items have {part!r}")

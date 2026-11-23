@@ -15,6 +15,9 @@ import uuid
 from barcodes import lookup
 
 
+SOURCES = {"user", "label", "estimate", "barcode", "existing", "saved", "web", "library"}
+
+
 def validate_plan(plan):
     if plan.get("question"):
         raise ValueError(str(plan["question"])[:500])
@@ -29,6 +32,10 @@ def validate_plan(plan):
         if not isinstance(item.get("query"), str) or not 2 <= len(item["query"].strip()) <= 150:
             raise ValueError("Не определено название еды. Ничего не записано.")
         try:
+            if item.get("source") is not None and item["source"] not in SOURCES:
+                raise ValueError()
+            if not isinstance(item.get("separate", False), bool):
+                raise ValueError()
             queries = item.get('search_queries', [])
             if not isinstance(queries, list) or len(queries) > 5 or any(not isinstance(q, str) or not 2 <= len(q) <= 150 for q in queries):
                 raise ValueError()

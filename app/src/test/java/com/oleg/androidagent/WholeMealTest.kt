@@ -46,4 +46,41 @@ class WholeMealTest {
         try { WholeMeal.items(plan(food("A", "3000", "100", "1"), food("B", "3000", "100", "1"))); fail() }
         catch (_: IllegalArgumentException) {}
     }
+    private fun separate(item: JSONObject) = item.put("separate", true)
+    @Test fun separateItemsAreNeverMergedAndKeepTheirNameAndPosition() {
+        val roll = separate(food("Ролл цезарь Small Food", "200", "100", "440", "user"))
+        val request = plan(food("Rice", "100", "100", "130"), roll, food("Fish", "100", "100", "160"))
+        val result = WholeMeal.items(request)
+        assertEquals(2, result.size)
+        assertEquals("Обед: Rice + Fish", result[0].getString("query"))
+        assertEquals("290", result[0].getJSONObject("nutrition").getString("calories"))
+        assertSame(roll, result[1])
+        assertEquals("Ролл цезарь Small Food", result[1].getString("query"))
+        assertEquals("Состав: Rice 100 г, Fish 100 г", WholeMeal.composition(request))
+    }
+    @Test fun leadingSeparateItemStaysFirstAndCombinedCardTakesTheFirstMergeablePosition() {
+        val roll = separate(food("Roll", "100", "100", "200"))
+        val result = WholeMeal.items(plan(roll, food("Rice", "100", "100", "130"), food("Fish", "100", "100", "160")))
+        assertEquals(listOf("Roll", "Обед: Rice + Fish"), result.map { it.getString("query") })
+    }
+    @Test fun theMergeSizeRuleCountsOnlyNonSeparateItems() {
+        val roll = separate(food("Roll", "100", "100", "200"))
+        val rice = food("Rice", "100", "100", "130")
+        val result = WholeMeal.items(plan(roll, rice))
+        assertEquals(2, result.size)
+        assertSame(roll, result[0])
+        assertSame(rice, result[1])
+        assertEquals("", WholeMeal.composition(plan(roll, rice)))
+        assertSame(roll, WholeMeal.items(plan(roll)).single())
+    }
+    @Test fun separateLibraryItemKeepsExactBatchNutrition() {
+        val pot = separate(food("Бешбармак", "300", "1800", "3400", "library"))
+        val item = WholeMeal.items(plan(pot)).single()
+        assertEquals("library", item.getString("source"))
+        assertEquals(567, MealNutrition.expected(item)!![0].setScale(0, java.math.RoundingMode.HALF_UP).toInt())
+    }
+    @Test fun separateItemWithBrokenNutritionIsRejected() {
+        val broken = separate(food("Roll", "100", "0", "200"))
+        try { WholeMeal.items(plan(broken, food("A", "1", "100", "1"))); fail() } catch (_: IllegalArgumentException) {}
+    }
 }

@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from food_library import FoodLibrary, library_lines, normalize as normalize_reply
 from meal_jobs import MealJobs, Emulator, validate_plan
 from meal_thread import MealThreads
 from nutrition import enrich, table, table_rows
@@ -30,7 +31,8 @@ SCHEMA = {
             "type": "object", "additionalProperties": False,
             "properties": {"query": {"type": "string"}, "grams": {"type": "string"},
                 "grams_source": {"type": "string", "enum": ["stated", "estimate"]},
-                "source": {"type": "string", "enum": ["user", "label", "estimate", "barcode", "existing", "saved"]},
+                "source": {"type": "string", "enum": ["user", "label", "estimate", "barcode", "existing", "saved", "library"]},
+                "reusable": {"type": "boolean"},
                 "search_queries": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 2, "maxLength": 150}},
                 "count": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
                 "unit": {"type": "string", "enum": ["pieces", "servings"]},
@@ -109,12 +111,24 @@ MEAL_PLAN = {
     "properties": {k: SCHEMA["properties"][k] for k in ("date", "meal", "items", "notes")},
     "required": ["date", "meal", "items"],
 }
+LIBRARY_ACTION = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "action": {"type": "string", "enum": ["save", "delete"]},
+        "name": {"type": "string", "minLength": 2, "maxLength": 150},
+        "aliases": {"type": "array", "maxItems": 5, "items": {"type": "string", "minLength": 2, "maxLength": 150}},
+        "nutrition": SCHEMA["properties"]["items"]["items"]["properties"]["nutrition"],
+        "default_grams": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+        "note": {"type": "string", "maxLength": 300},
+    }, "required": ["action", "name"],
+}
 THREAD_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "kind": {"type": "string", "enum": ["chat", "meal", "drop"]},
         "reply": {"type": "string", "maxLength": 1500},
         "meal": {"anyOf": [MEAL_PLAN, {"type": "null"}]},
+        "library": {"type": "array", "maxItems": 5, "items": LIBRARY_ACTION},
     }, "required": ["kind", "reply", "meal"],
 }
 
@@ -148,7 +162,16 @@ Exact totals without a dish name: item 'Приём пищи'. grams_source='stat
 gives the eaten amount (or says the whole package was eaten and its net weight is printed); otherwise 'estimate'.
 Use explicit weights exactly (decimal commas, '200гр'); never invent a brand or ingredient; recognise obvious voice
 errors. Every identifiable component visible in a meal photo is an item. Put every estimate/default in short Russian
-notes, never present it as a measurement. """
+notes, never present it as a measurement.
+Library of reusable foods: the message lists the foods he saved (name | nutrition per basis | default grams | note). When he
+names one, add an item with source='library', query = the saved name, grams = his amount (omit grams to use the default),
+and no nutrition: the program fills the exact saved values and writes it as its own card. Never save silently. When something
+will clearly repeat (a packaged store product, a big batch-cooked dish) offer once in reply 'Сохранить как повторяющуюся
+еду?' and save only on his yes or request. Save/forget with the top-level "library" list: {action: save|delete, name,
+aliases, nutrition per basis_grams, default_grams, note}; it writes nothing to the diary. 'Приготовил ... всего N г / N ккал':
+save one entry with basis_grams = the total weight and the totals, note the pot. To log a custom item AND save it, set
+reusable=true on that item (exact nutrition only: user/label/barcode). One-off unclear meals are not saved and stay merged
+into the one meal card. """
 CATALOG_RULES = """Restaurant-menu dishes or an explicit request to use an existing FatSecret food: source=existing, omit
 nutrition/barcode, include grams only when stated, otherwise count + unit=pieces or count='1' + unit=servings; up to 5
 search_queries (canonical name, reordered words, brand in Latin, localized spelling), intent = his original request. A
@@ -163,11 +186,6 @@ DUPLICATE_HOURS = 3
 IMAGE_CAP = 10
 VOICE_PLACEHOLDER = "Разбери присланные фото"
 MEAL_NAMES = {"breakfast": "завтрак", "lunch": "обед", "dinner": "ужин", "other": "приём пищи"}
-
-
-def normalize_reply(text):
-    """Lowercase, letters and digits only, single spaces: '✅ Записать!' -> 'записать'."""
-    return " ".join("".join(c if c.isalnum() else " " for c in str(text).lower()).split())
 
 
 def is_confirm_word(text):
@@ -213,7 +231,7 @@ def _grams(item):
     return f" {item['grams']} г" if item.get("grams") else ""
 
 
-def build_prompt(date, now, closed, turns, draft, new_turn):
+def build_prompt(date, now, closed, turns, draft, new_turn, library=()):
     """The user message for the model: closed meals, the open dialog with numbered images, the draft, the new message.
 
     Returns (prompt, images): images are the newest IMAGE_CAP of the dialog in order, numbered 1..n in the prompt."""
@@ -243,6 +261,11 @@ def build_prompt(date, now, closed, turns, draft, new_turn):
             state = {"written": "записан", "uncertain": "запись неточная, проверить", "pending": "передан на запись"}[row["state"]]
             items = "; ".join(f"{it.get('query')}{_grams(it)}" for it in row["items"])
             out.append(f"- {_hm(row['closed'])} {MEAL_NAMES.get(row['meal'], row['meal'])}, {state}: {items}")
+    if library:
+        out.append(f"Библиотека сохранённых повторяющихся продуктов ({len(library)}):")
+        out += library_lines(library)
+    else:
+        out.append("Библиотека сохранённых продуктов: пока пуста.")
     out.append("Открытый диалог про текущий приём" + (":" if turns else ": пока пусто"))
     out += [line(turn) for turn in turns]
     if draft:
@@ -448,6 +471,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
         self.limit_until = 0
         self.reset_hint = ""
         self.threads = MealThreads(cwd / "meal-thread.sqlite", cwd / "thread-images")
+        self.library = FoodLibrary(cwd / "food-library.sqlite")
         self.jobs = MealJobs(cwd / "meal-jobs.sqlite", self.process_custom_meal)
 
     def web_search(self, payload, schema, system):
@@ -477,7 +501,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
             return self.prepare(thread, key, plan, payload)
         new_turn = {"role": "user", "ts": now, "text": typed, "voice": transcript, "images": new_images}
         closed = threads.closed_meals(now, CLOSED_HOURS, self.job_state)
-        prompt, images = build_prompt(date, now, closed, threads.turns(thread), draft, new_turn)
+        prompt, images = build_prompt(date, now, closed, threads.turns(thread), draft, new_turn, self.library.all())
         with self.busy:
             try:
                 answer = parse_meal(prompt, date, self.cli, self.cwd, schema=build_schema(catalog), system=build_system(catalog),
@@ -489,7 +513,12 @@ nutrition or quantities; the executor reads them from the selected card.'''
         # The turn is stored only once the model answered, so a failed request never pollutes the dialog.
         threads.add_turn(thread, "user", typed, transcript, new_images, now=now)
         reply = str(answer.get("reply") or "").strip()[:1500]
+        acks = self.apply_library(answer.get("library"))
+        if acks:
+            reply = (reply + "\n" + "\n".join(acks)).strip()
         meal = answer.get("meal") if answer.get("kind") == "meal" else None
+        if meal and isinstance(meal, dict) and acks:
+            meal["notes"] = ("\n".join(acks) + "\n" + str(meal.get("notes") or "")).strip()
         if answer.get("kind") == "drop":
             # Closing is always safe (nothing is written), so the model may do it.
             threads.add_turn(thread, "bot", reply or "Хорошо, ничего не записываю.", now=now)
@@ -498,7 +527,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
         try:
             if not isinstance(meal, dict) or not meal.get("items"):
                 if answer.get("kind") == "meal":
-                    reply = ""  # a "meal" without a meal is inconsistent: never relay its text (it may claim a write)
+                    reply = "\n".join(acks)  # a "meal" without a meal is inconsistent: never relay its text (it may claim a write)
                 return self.say(thread, reply or "Не понял, что ты съел. Опиши еду или пришли фото.")
             return self.propose(thread, key, meal, draft, closed, payload, now, catalog)
         except ValueError as error:
@@ -510,6 +539,40 @@ nutrition or quantities; the executor reads them from the selected card.'''
         return " ".join(part for turn in self.threads.turns(thread) if turn["role"] == "user"
                         for part in (turn["text"], turn["voice"]) if part)[-600:]
 
+    def apply_library(self, actions):
+        """Library actions of the model: validated by code, applied at once (they never touch the diary). Returns acknowledgements."""
+        acks = []
+        for action in (actions if isinstance(actions, list) else [])[:5]:
+            if not isinstance(action, dict):
+                continue
+            name = str(action.get("name", ""))[:150]
+            try:
+                if action.get("action") == "save":
+                    entry, created = self.library.save({key: action.get(key) for key in ("name", "aliases", "nutrition", "default_grams", "note")})
+                    acks.append(f"{'Сохранил' if created else 'Обновил'} в библиотеке: {entry['name']}.")
+                elif action.get("action") == "delete":
+                    acks.append(f"Удалил из библиотеки: {name}." if self.library.delete(name) else f"В библиотеке нет «{name}».")
+            except ValueError as error:
+                acks.append(f"Не сохранил «{name}»: {error}")
+        return acks
+
+    def resolve_library(self, plan):
+        """Fill source='library' items with the saved exact nutrition. Returns a question for the user, or None."""
+        for item in plan["items"]:
+            if item.get("source") != "library":
+                continue
+            entry = self.library.find(item.get("query", ""))
+            if not entry:
+                return f"В библиотеке нет «{str(item.get('query'))[:100]}». Пришли состав (КБЖУ на 100 г или на порцию) или напиши, что это за еда."
+            for key in ("search_queries", "count", "unit", "intent", "barcode", "reusable"):
+                item.pop(key, None)
+            item.update(query=entry["name"], nutrition=json.loads(json.dumps(entry["nutrition"])), separate=True)
+            if not item.get("grams"):
+                if not entry.get("default_grams"):
+                    return f"Сколько граммов «{entry['name']}» ты съел? Для него нет веса по умолчанию."
+                item.update(grams=entry["default_grams"], grams_source="estimate")
+        return None
+
     def say(self, thread, message):
         self.threads.add_turn(thread, "bot", message)
         return {"status": "failed", "reply": True, "message": message}
@@ -518,7 +581,17 @@ nutrition or quantities; the executor reads them from the selected card.'''
         plan = {**meal, "question": "", "notes": str(meal.get("notes") or "")}
         if not catalog and catalog_item_without_grams(plan):
             return self.say(thread, "Не могу записать блюдо без веса. Напиши, сколько граммов ты съел, или поправь состав.")
+        question = self.resolve_library(plan)
+        if question:
+            return self.say(thread, question)
         validate_plan(plan)
+        for item in plan["items"]:
+            if item.get("reusable") and item.get("source") not in {"existing", "saved", "library"}:
+                item["separate"] = True
+            else:
+                item.pop("reusable", None)
+                if item.get("source") != "library":
+                    item.pop("separate", None)  # only code decides what stays a card of its own
         if plan["date"] != payload["date"]:
             raise ValueError("Пока поддерживается только сегодняшний дневник. Ничего не записано.")
         if draft:
@@ -547,9 +620,28 @@ nutrition or quantities; the executor reads them from the selected card.'''
         self.threads.add_turn(thread, "bot", message)
         return {"status": "failed", "reply": True, "confirm": True, "message": message}
 
+    def save_reusable(self, plan):
+        """Items marked reusable go into the library only when the meal is handed to the executor; estimates are never saved."""
+        skipped = []
+        for item in plan["items"]:
+            if not item.pop("reusable", False):
+                continue
+            if item.get("source") == "estimate" or not item.get("nutrition"):
+                skipped.append(item["query"])
+                continue
+            try:
+                known = self.library.find(item["query"]) or {}  # an update keeps aliases, default grams and note
+                self.library.save({**{k: known[k] for k in ("aliases", "default_grams", "note") if k in known},
+                                   "name": known.get("name", item["query"]), "nutrition": item["nutrition"]})
+            except ValueError as error:
+                skipped.append(f"{item['query']} ({error})")
+        if skipped:
+            plan["notes"] = (str(plan.get("notes", "")) + "\nВ библиотеку не сохранено: " + "; ".join(skipped)).strip()
+
     def prepare(self, thread, key, plan, payload):
         """The meal goes to the executor: the thread closes; its job state is resolved lazily later."""
         plan["_execution_id"] = key
+        self.save_reusable(plan)
         self.threads.close(thread, "prepared", job=key, meal=meal_summary(plan))
         if payload.get("target") == "phone":
             return {"status": "prepared", "target": "phone", "plan": plan}

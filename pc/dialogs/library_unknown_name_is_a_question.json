@@ -1,0 +1,47 @@
+{
+ "name": "library_unknown_name_is_a_question",
+ "about": "the model names a food that is not in the library: reply asks, nothing is written",
+ "images": {},
+ "turns": [
+  {
+   "text": "тот же завтрак",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "breakfast",
+     "items": [
+      {
+       "query": "Тот же завтрак",
+       "grams": "250",
+       "grams_source": "stated",
+       "source": "library"
+      }
+     ],
+     "notes": ""
+    }
+   },
+   "expect": {
+    "outcome": "reply",
+    "model_called": true,
+    "library_lacks": [
+     "тот же завтрак"
+    ]
+   }
+  },
+  {
+   "at": 1,
+   "text": "ок",
+   "model": {
+    "kind": "chat",
+    "reply": "Нечего записывать.",
+    "meal": null
+   },
+   "expect": {
+    "outcome": "reply",
+    "model_called": true
+   }
+  }
+ ]
+}

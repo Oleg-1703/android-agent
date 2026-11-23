@@ -15,3 +15,5 @@ secrets.properties
 .kotlin/
 .local/
 __pycache__/
+
+*.sqlite
