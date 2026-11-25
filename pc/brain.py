@@ -323,6 +323,17 @@ def model_error_class(error):
     return type(error).__name__
 
 
+def cli_failure_hint(*outputs) -> str:
+    """Coarse reason of a failed CLI call for the event log (never the raw text, which may hold user content)."""
+    text = " ".join(str(o or "") for o in outputs).lower()
+    for hint, pattern in (("auth", r"log ?in|auth|credential|token expired|401"), ("rate_limit", r"rate.?limit|429|too many"),
+                          ("overloaded", r"overload|529|503|unavailable"), ("network", r"network|econn|timed? ?out|dns|enotfound"),
+                          ("update", r"updat|install")):
+        if re.search(pattern, text):
+            return hint
+    return "empty" if not text.strip() else "other"
+
+
 class SubscriptionLimit(RuntimeError):
     def __init__(self, reset=""):
         super().__init__("subscription_limit")
@@ -378,7 +389,7 @@ def parse_meal(*args, purpose: str = "parse", **kwargs) -> dict:
         result = _parse_meal(*args, **kwargs)
     except BaseException as error:
         tele("model_call", ok=False, ms=int((time.monotonic() - started) * 1000), err_class=model_error_class(error),
-             n={"images": images}, flags={"purpose": purpose, **({"rc": error.rc} if hasattr(error, "rc") else {})})
+             n={"images": images}, flags={"purpose": purpose, **({"rc": error.rc} if hasattr(error, "rc") else {}), **({"hint": error.hint} if getattr(error, "hint", None) else {})})
         raise
     tele("model_call", ok=True, ms=int((time.monotonic() - started) * 1000), n={"images": images}, flags={"purpose": purpose})
     return result
@@ -415,6 +426,7 @@ def _parse_meal(text: str, date: str, cli: str, cwd: Path, image: dict | None = 
             raise SubscriptionLimit(reset)
         failure = RuntimeError("subscription_unavailable")
         failure.rc = result.returncode
+        failure.hint = cli_failure_hint(result.stdout, result.stderr)
         raise failure
     if len(result.stdout) > 1_000_000:
         raise RuntimeError("invalid_model_output")
