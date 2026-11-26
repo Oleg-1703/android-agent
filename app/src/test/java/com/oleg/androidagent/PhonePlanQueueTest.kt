@@ -44,7 +44,7 @@ class PhonePlanQueueTest {
         val queue = PhonePlanQueue(store, "scope")
         val remote = object : PhoneMealRunner.Remote {
             override fun claim(id: String) = JSONObject().put("status", "claimed")
-            override fun report(id: String, result: JSONObject) {}
+            override fun report(id: String, result: JSONObject) = JSONObject().put("status", "accepted")
         }
         var writes = 0
         val runner = PhoneMealRunner(store, remote) { writes++; JSONObject().put("status", "complete").put("receipts", org.json.JSONArray()) }

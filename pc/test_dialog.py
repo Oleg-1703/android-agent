@@ -182,8 +182,115 @@ class Store(unittest.TestCase):
             threads.close(thread, "prepared", now=1000 * number + 1, job=job, meal={"meal": "lunch", "items": [{"query": job}]})
         states = {"w": "complete", "u": "uncertain", "f": "failed", "p": "executing"}
         rows = threads.closed_meals(5000, hours=6, job_state=states.get)
-        self.assertEqual([(row["items"][0]["query"], row["state"]) for row in rows], [("p", "pending"), ("u", "uncertain"), ("w", "written")])
+        self.assertEqual([(row["items"][0]["query"], row["state"]) for row in rows], [("p", "pending"), ("f", "failed"), ("u", "uncertain"), ("w", "written")])
         self.assertEqual(threads.closed_meals(5000 + 7 * 3600, hours=6, job_state=states.get), [])
+
+    def prepared(self, threads, job="j1", now=1000):
+        thread = threads.open_thread(now)
+        threads.add_turn(thread, "user", "обед", now=now + 1)
+        plan = {"meal": "lunch", "items": [{"query": "Курица", "grams": "150"}]}
+        threads.close(thread, "prepared", now=now + 2, job=job, meal={"meal": "lunch", "items": plan["items"], "plan": plan})
+        return thread, plan
+
+    def test_reopen_restores_the_plan_keeps_turns_and_is_idempotent(self):
+        threads = self.store()
+        thread, plan = self.prepared(threads)
+        self.assertEqual(threads.reopen("j1", "Не записалось: x.", now=1100), thread)
+        self.assertEqual(threads.open_thread(1101), thread)
+        self.assertEqual(threads.draft(thread), plan)
+        self.assertEqual([(t["role"], t["text"]) for t in threads.turns(thread)], [("user", "обед"), ("bot", "Не записалось: x.")])
+        self.assertIsNone(threads.reopen("j1", "again", now=1200))
+        self.assertEqual(len(threads.turns(thread)), 2)
+        self.assertEqual(threads.closed_meals(1300, job_state=lambda job: "failed"), [])
+
+    def test_reopen_after_the_lazy_failed_marking_and_unknown_job(self):
+        threads = self.store()
+        thread, _ = self.prepared(threads)
+        threads.closed_meals(1100, job_state=lambda job: "failed")
+        self.assertEqual(threads.reopen("j1", "t", now=1200), thread)
+        self.assertIsNone(threads.reopen("missing", "t"))
+
+    def test_reopen_joins_a_thread_started_meanwhile_but_never_overrides_its_draft(self):
+        threads = self.store()
+        thread, plan = self.prepared(threads)
+        newer = threads.open_thread(1100)
+        threads.add_turn(newer, "user", "Продолжи где остановился", now=1101)
+        self.assertEqual(threads.reopen("j1", "t", now=1200), thread)
+        self.assertEqual([t["text"] for t in threads.turns(thread)], ["обед", "Продолжи где остановился", "t"])
+        self.assertEqual(threads.draft(thread), plan)
+        other, _ = self.prepared(threads, "j2", 2000)
+        busy = threads.open_thread(2100)
+        threads.set_draft(busy, {"items": []})
+        self.assertIsNone(threads.reopen("j2", "t", now=2200))
+        self.assertEqual(threads.draft(busy), {"items": []})
+
+
+class StoppedMeal(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.server = server = brain.BrainServer.__new__(brain.BrainServer)
+        server.threads = MealThreads(Path(directory.name) / "t.sqlite", Path(directory.name) / "thread-images")
+        self.thread = server.threads.open_thread(1000)
+        plan = {"meal": "lunch", "items": [{"query": "Курица", "grams": "150"}]}
+        server.threads.close(self.thread, "prepared", now=1001, job="k", meal=brain.meal_summary(plan))
+
+    def test_only_a_failure_before_the_commit_with_nothing_saved_reopens_the_meal(self):
+        for body in ({"status": "failed", "stage": "after_commit", "message": "m"},
+                     {"status": "uncertain", "stage": "after_commit", "message": "m"},
+                     {"status": "failed", "message": "Запрос отменён до записи."},
+                     {"status": "failed", "stage": "open_screen", "message": "m", "receipts": [{"preview": "A"}]},
+                     {"status": "complete", "stage": "open_screen", "receipts": [{"preview": "A"}]}):
+            self.server.on_phone_receipt("k", body)
+            self.assertIsNone(self.server.threads.draft(self.server.threads.open_thread(1002)), body)
+        self.server.on_phone_receipt("k", {"status": "failed", "stage": "before_commit", "message": "Разблокируй телефон."})
+        thread = self.server.threads.open_thread(1003)
+        self.assertEqual(thread, self.thread)
+        self.assertEqual(self.server.threads.draft(thread)["items"][0]["query"], "Курица")
+        self.assertIn("Не записалось: Разблокируй телефон. Нажми ✅", self.server.threads.turns(thread)[-1]["text"])
+
+    def test_receipt_response_says_whether_the_draft_was_restored(self):
+        failed = {"status": "failed", "stage": "open_screen", "message": "m"}
+        self.assertEqual(self.server.on_phone_receipt("k", {"status": "complete"}), {})
+        self.assertEqual(self.server.on_phone_receipt("k", {**failed, "stage": "after_commit"}), {})
+        self.assertEqual(self.server.on_phone_receipt("k", failed), {"draft_restored": True})
+        self.assertEqual(self.server.on_phone_receipt("k", failed), {"draft_restored": True})  # redelivery after a lost ack
+
+    def test_a_draft_in_the_new_thread_is_not_overwritten_and_the_response_says_busy(self):
+        other = self.server.threads.open_thread(1002)
+        self.server.threads.set_draft(other, {"items": [{"query": "Рис", "grams": "200"}]})
+        response = self.server.on_phone_receipt("k", {"status": "failed", "stage": "before_commit", "message": "m"})
+        self.assertEqual(response, {"draft_restored": False, "reason": "busy"})
+        self.assertEqual(self.server.threads.draft(self.server.threads.open_thread(1003))["items"][0]["query"], "Рис")
+        self.assertEqual(self.server.threads.closed_meals(1004, job_state=lambda job: "failed")[0]["state"], "failed")
+
+    def test_failed_job_with_saved_cards_or_after_commit_is_uncertain_for_the_model(self):
+        class Jobs:
+            def get(self, key):
+                return {"a": {"status": "failed", "receipts": [{"preview": "A"}]}, "b": {"status": "failed", "stage": "after_commit"},
+                        "c": {"status": "failed", "stage": "open_screen"}, "d": {"status": "failed", "stage": "search_results free text"}}.get(key)
+        self.server.jobs = Jobs()
+        self.assertEqual([self.server.job_state(k) for k in "abcd"], ["uncertain", "uncertain", "failed", "failed"])
+
+    def test_old_apk_receipt_with_free_text_stage_is_accepted_and_never_reopens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = MealJobs(Path(directory) / "j.sqlite", lambda payload: {"status": "complete"})
+            with jobs.connection() as db:
+                db.execute("INSERT INTO jobs VALUES ('k','f','executing','{\"target\": \"phone\"}')")
+            body = {"status": "failed", "stage": "custom_nutrition_review Какой-то экран", "message": "m", "receipts": []}
+            self.assertEqual(jobs.finish_phone("k", body), {"status": "accepted"})
+        self.server.on_phone_receipt("k", body)
+        self.assertEqual(self.server.threads.closed_meals(1002, job_state=lambda job: "failed")[0]["state"], "failed")
+
+    def test_failed_and_uncertain_meals_are_in_the_prompt_with_their_items(self):
+        now = 1005
+        for state in ("failed", "uncertain"):
+            rows = [{"closed": 1001, "meal": "lunch", "items": [{"query": "Курица", "grams": "150"}], "state": state}]
+            prompt, _ = brain.build_prompt("2026-11-20", now, rows, [], None, {"role": "user", "ts": now, "text": "продолжи", "voice": "", "images": []})
+            self.assertIn(state, prompt)
+            self.assertIn("Курица 150 г", prompt)
+        self.assertIsNone(brain.duplicate_of({"meal": "lunch", "items": [{"query": "Курица"}]}, [{"closed": 1001, "meal": "lunch", "items": [{"query": "Курица"}], "state": "failed"}], 1005))
+        self.assertIn("never answer that the dialog is empty", brain.THREAD_SYSTEM)
 
 
 class Prompt(unittest.TestCase):

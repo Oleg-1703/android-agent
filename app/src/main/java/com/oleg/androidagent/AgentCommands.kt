@@ -33,10 +33,10 @@ class AgentCommands(
     fun resumePhone(telegram: TelegramApi): List<CommandReply> {
         if (!hasPendingPhone()) return emptyList()
         val screen = requireNotNull(ui)
-        return PcBrain(config, client, store).resumePhone({ screen.canExecute() },
+        return PcBrain(config, client, store).resumePhoneRendered({ screen.canExecute() },
             { screen.searchState + " " + screen.diaryRangeState }, { screen.withExecutionScreen(it) }) { plan ->
             CustomMealEngine(store, screen, progress = progress(telegram)).log(plan)
-        }.map { CommandReply.of(it) }
+        }.map { CommandReply.of(it.text, it.confirm) }
     }
     private val engine = MealEngine(store, diary)
     private val apiConnected: Boolean get() = config.optString("fs_token").isNotBlank() && config.optString("fs_token_secret").isNotBlank()

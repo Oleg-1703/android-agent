@@ -42,8 +42,12 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         } catch (e: ApiFailure) { e.status == 400 /* a batch the PC calls malformed would block the queue for ever */ }
         catch (_: Exception) { false }
     }
+    /** A rendered receipt; [confirm] = the PC reopened the meal as a draft, so the message carries the "Записать" button. */
+    data class Rendered(val text: String, val confirm: Boolean)
+    fun resumePhoneRendered(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<Rendered> =
+        plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map { Rendered(receipt(it), retryable(it)) }
     fun resumePhone(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<String> =
-        plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map(::receipt)
+        resumePhoneRendered(ready, stage, session, execute).map { it.text }
     /** Best effort: a cancelled estimated draft must not be confirmable by a later "ок". Never breaks the local cancel. */
     fun cancelDraft() {
         try {
@@ -221,21 +225,37 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         val id = store?.get("pc_last_job").orEmpty()
         if (!id.matches(Regex("[a-f0-9]{64}"))) return "Помощник ПК подключён. Опиши еду или пришли фото с голосом."
         if (plans().contains(id)) return "Еда распознана и ждёт готовности телефона: включённого экрана, снятой блокировки и подключённой службы управления Android Agent. Повторно отправлять не нужно."
-        phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return lastRequest(receipt(it)) }
-        return lastRequest(receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000))))
+        phoneRunner { throw IllegalStateException("Status never writes") }.status(id)?.let { return lastRequest(receipt(it, offerRetry = false)) }
+        return lastRequest(receipt(JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)), offerRetry = false))
     }
     private fun lastRequest(text: String) = if (MealTable.isMarked(text)) MealTable.join(listOf("Последний запрос:", text)) else "Последний запрос:\n$text"
     private fun phoneRunner(stage: () -> String = { "" }, execute: (JSONObject) -> JSONObject) = PhoneMealRunner(requireNotNull(store), object : PhoneMealRunner.Remote {
         private fun post(id: String, action: String, body: JSONObject): JSONObject = JSONObject(Http.text(client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build(),
             jobRequest("v1/jobs/$id/$action").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build(), 16000))
         override fun claim(id: String) = post(id, "claim", JSONObject())
-        override fun report(id: String, result: JSONObject) {
+        override fun report(id: String, result: JSONObject): JSONObject {
             // table/meal are phone-side presentation only; the PC receipt schema does not carry them.
             val wire = JSONObject(result.toString()).apply { remove("table"); remove("meal") }
-            if (post(id, "receipt", wire).optString("status") != "accepted") throw java.io.IOException("ПК не подтвердил квитанцию телефона.")
+            return post(id, "receipt", wire).also { if (it.optString("status") != "accepted") throw java.io.IOException("ПК не подтвердил квитанцию телефона.") }
         }
     }, stage, execute)
-    private fun receipt(result: JSONObject): String {
+    /** Nothing was saved and the PC reopened the meal as a draft (the PC does so on the same receipt), so the owner may press ✅. */
+    private fun retryable(result: JSONObject) = result.optString("status") == "failed" &&
+        !result.optBoolean("unreported") && !result.has("not_restored") && result.optString("stage") in PRE_COMMIT_STAGES && result.optJSONArray("receipts")?.length().let { it == null || it == 0 }
+    internal fun receipt(result: JSONObject, offerRetry: Boolean = true): String {
+        if (offerRetry && result.optString("status") == "failed" && result.has("not_restored") && result.optString("stage") in PRE_COMMIT_STAGES) {
+            // The PC kept another open draft untouched; a ✅ would confirm that one, so no button.
+            val reason = result.optString("message", "ничего не записано").trim().trimEnd('.')
+            return "Не записалось: $reason. " + if (result.optString("not_restored") == "busy") BUSY_FOOTER else "Напиши «повтори ...», если нужно."
+        }
+        if (offerRetry && retryable(result)) {
+            lastConfirm = true
+            val message = result.optString("message", "Не записалось.").trim()
+            result.optJSONObject("table")?.let { table ->
+                return MealTable.mark(MealTable.html(table, "${MealTable.mealName(result.optString("meal"))} — не записалось", message, RETRY_FOOTER))
+            }
+            return "$message\n\n$RETRY_FOOTER"
+        }
         val savedBeforeFailure = result.objects("receipts").takeIf { it.isNotEmpty() }?.let { rows ->
             "До остановки уже сохранено и проверено:\n" + rows.joinToString("\n") { it.optString("preview") } + "\n\n"
         }.orEmpty()
@@ -252,6 +272,9 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         }
     }
     companion object {
+        val PRE_COMMIT_STAGES = setOf("open_screen", "before_commit")
+        const val BUSY_FOOTER = "Сейчас у тебя другой черновик, закончи его или напиши «повтори ...»."
+        const val RETRY_FOOTER = "Нажми ✅ Записать, чтобы повторить."
         fun endpoint(value: String): okhttp3.HttpUrl {
             val url = try { value.trim().toHttpUrl() } catch (_: IllegalArgumentException) {
                 throw IllegalArgumentException("Укажи HTTPS-адрес своего ПК.")

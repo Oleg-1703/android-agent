@@ -161,7 +161,7 @@ class CustomMealEngineTest {
         try { engine.log(meal); fail() } catch (_: IllegalArgumentException) {}
         assertEquals(0, screen.creations)
     }
-    @Test fun failedCleanupKeepsJournalAndPreservesOriginalFailure() {
+    @Test fun failedCleanupStillClearsTheJournalWhenNothingWasSaved() {
         val failing = object : CustomMealScreen by screen {
             override fun commitStarted() = false
             override fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String =
@@ -171,12 +171,50 @@ class CustomMealEngineTest {
         try {
             CustomMealEngine(store, failing) {}.log(plan())
             fail()
-        } catch (error: IllegalArgumentException) {
-            assertEquals("Original field failure", error.message)
-            assertEquals("Cleanup unavailable", error.suppressed.single().message)
+        } catch (error: PreCommitFailure) {
+            assertEquals("open_screen", error.stage)
+            assertEquals("Original field failure Ничего не записано.", error.message)
+            assertEquals("Original field failure", error.cause!!.message)
+            assertEquals("Cleanup unavailable", error.cause!!.suppressed.single().message)
+        }
+        assertEquals("", store.get("write_intent"))
+        assertEquals(0, screen.saves)
+    }
+    @Test fun slowScreenBeforeCommitIsAClearPreCommitFailure() {
+        val slow = object : CustomMealScreen by screen {
+            override fun commitStarted() = false
+            override fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String = throw ScreenTimeout("old text")
+        }
+        try { CustomMealEngine(store, slow) {}.log(plan()); fail() } catch (error: PreCommitFailure) {
+            assertEquals("FatSecret не открылся вовремя, ничего не записано.", error.message)
+        }
+        assertEquals("", store.get("write_intent"))
+    }
+    @Test fun unverifiedFirstCardThenPreCommitFailureOfTheSecondIsFlaggedUnverified() {
+        val request = plan()
+        request.put("items", org.json.JSONArray().put(request.getJSONArray("items").getJSONObject(0).put("source", "existing").also { it.remove("nutrition") })
+            .put(JSONObject(request.getJSONArray("items").getJSONObject(0).toString()).put("query", "other")))
+        screen.uncertain = true
+        var calls = 0
+        val second = object : CustomMealScreen by screen {
+            override fun prepareExisting(meal: String, item: JSONObject, onContext: (String) -> Unit): String =
+                if (++calls == 1) screen.prepareExisting(meal, item, onContext) else throw ScreenTimeout("slow")
+            override fun commitStarted() = false
+        }
+        try { CustomMealEngine(store, second) {}.log(request); fail() } catch (_: PreCommitFailure) {}
+        assertEquals(1, screen.saves)
+        assertEquals("1", store.get("custom_unverified"))
+        assertEquals("", store.get("write_intent"))
+    }
+    @Test fun failureAfterTheProductWasCreatedKeepsTheJournalAsUncertain() {
+        val late = object : CustomMealScreen by screen {
+            override fun commitStarted() = true
+            override fun createCustom(meal: String, item: JSONObject, onContext: (String) -> Unit): String = throw ScreenTimeout("portion screen")
+        }
+        try { CustomMealEngine(store, late) {}.log(plan()); fail() } catch (error: ScreenTimeout) {
+            assertEquals("portion screen", error.message)
         }
         assertTrue(store.get("write_intent").isNotBlank())
-        assertEquals(0, screen.saves)
     }
     @Test fun reconciliationOnlyReadsAndNeverRepeatsAWrite() {
         val before = screen.snapshot("breakfast")

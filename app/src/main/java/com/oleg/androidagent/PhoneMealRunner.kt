@@ -9,7 +9,8 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
     private val execute: (JSONObject) -> JSONObject) {
     interface Remote {
         fun claim(id: String): JSONObject
-        fun report(id: String, result: JSONObject)
+        /** The PC's receipt response; `draft_restored: false` (+ `reason`) means the confirmed meal did not return as a draft. */
+        fun report(id: String, result: JSONObject): JSONObject
     }
     private fun key(id: String): String {
         require(id.matches(Regex("[a-f0-9]{64}")))
@@ -22,17 +23,24 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         if (!local.has("result")) return uncertain("Запрос уже начинал выполняться на телефоне. Проверь FatSecret; автоматического повтора не будет.")
         if (local.optBoolean("needs_report")) {
             try {
-                remote.report(id, local.getJSONObject("result"))
+                val answer = remote.report(id, local.getJSONObject("result"))
+                // Old PCs send no draft_restored: then the old behaviour (the draft is there) stays.
+                if (answer.has("draft_restored") && !answer.optBoolean("draft_restored", true)) local.put("not_restored", answer.optString("reason", "unknown"))
                 store.put(key(id), local.put("needs_report", false).toString())
             } catch (_: IOException) {
                 // The verified local receipt survives a lost acknowledgement for a later /status.
             }
         }
-        return local.getJSONObject("result")
+        // Transient (never stored): the PC has not acknowledged this receipt yet, so it cannot have restored a draft.
+        return local.getJSONObject("result").also {
+            if (local.optBoolean("needs_report")) it.put("unreported", true)
+            // Transient (never stored in the result): the PC did not restore the draft for this job, so a ✅ would hit another one.
+            if (local.has("not_restored")) it.put("not_restored", local.getString("not_restored"))
+        }
     }
     /** Only the fixed stage identifier (first token, e.g. custom_nutrition_review) is logged, never the free text of the stage. */
     private fun stageFlag(result: JSONObject): Map<String, Any> =
-        result.optString("stage").substringBefore(' ').takeIf { it.matches(Regex("[A-Za-z0-9_.-]{1,32}")) }?.let { mapOf("last_state" to it) } ?: emptyMap()
+        result.optString("ui_state").substringBefore(' ').takeIf { it.matches(Regex("[A-Za-z0-9_.-]{1,32}")) }?.let { mapOf("last_state" to it) } ?: emptyMap()
     fun run(id: String, prepared: JSONObject): JSONObject = start(id, prepared, false)
     fun cancel(id: String, prepared: JSONObject): JSONObject = start(id, prepared, true)
     private fun start(id: String, prepared: JSONObject, cancel: Boolean): JSONObject {
@@ -47,16 +55,24 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         if (claim.optString("status") != "claimed") return uncertain(claim.optString("message", "Этот запрос уже выполнялся. Проверь дневник; повтор запрещён."))
         store.put(key(id), JSONObject().put("state", "executing").toString())
         val stale = if (cancel) null else StaleWrite.clear(store)
-        if (!cancel) store.put("custom_receipts", "[]")
+        if (!cancel) { store.put("custom_receipts", "[]"); store.put("custom_unverified", "") }
         val startedAt = System.nanoTime()
         val result = if (cancel) JSONObject().put("status", "failed").put("receipts", JSONArray())
             .put("message", "Запрос отменён до записи. Эта еда не добавлена.")
         else try { execute(plan) } catch (error: Exception) {
-            JSONObject().put("status", if (store.get("write_intent").isBlank()) "failed" else "uncertain")
-                .put("receipts", JSONArray(store.get("custom_receipts").ifBlank { "[]" }))
-                .put("stage", stage().take(500))
-                .put("message", error.message?.take(700) ?: "Не удалось выполнить запись на телефоне. Проверь дневник; автоматически не повторяю.")
+            val receipts = JSONArray(store.get("custom_receipts").ifBlank { "[]" })
+            // Nothing saved and no Save press started: the journal is empty (the engine clears it), so this is a plain failure.
+            val unverified = store.get("custom_unverified").isNotBlank() // an earlier item pressed Save but could not be verified
+            val before = store.get("write_intent").isBlank() && receipts.length() == 0 && !unverified
+            val fallback = if (store.get("write_intent").isBlank() && receipts.length() > 0) "Часть еды уже записана, остановка до следующей. Проверь дневник; автоматически не повторяю."
+                else "Не удалось выполнить запись на телефоне. Проверь дневник; автоматически не повторяю."
+            JSONObject().put("status", if (store.get("write_intent").isBlank() && !unverified) "failed" else "uncertain")
+                .put("receipts", receipts)
+                .put("stage", if (before) (error as? PreCommitFailure)?.stage ?: "before_commit" else "after_commit")
+                .put("ui_state", stage().take(500))
+                .put("message", error.message?.take(700) ?: fallback)
         }
+        if (result.optString("status") == "uncertain" && !result.has("stage")) result.put("stage", "after_commit")
         if (result.optString("notes").isBlank()) result.put("notes", plan.optString("notes"))
         if (stale != null) {
             // The PC receipt schema has no extra keys; a complete receipt shows notes, the others show the message.

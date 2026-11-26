@@ -120,11 +120,12 @@ class MealThreads:
     def closed_meals(self, now=None, hours=6, job_state=None):
         """Meals handed to the executor in the last `hours`, newest first, with their state.
 
-        job_state(job_key) -> 'complete'|'uncertain'|'failed'|other: resolves a prepared meal lazily. A failed job saved
-        nothing, so it is not listed. state is 'written' | 'uncertain' | 'pending'."""
+        job_state(job_key) -> 'complete'|'uncertain'|'failed'|other: resolves a prepared meal lazily. state is
+        'written' | 'uncertain' | 'failed' (nothing was saved) | 'pending'. The model must see failed and uncertain meals,
+        so that "продолжи" after a stop never meets an empty dialog."""
         now = time.time() if now is None else now
         with self.lock, self.connection() as db:
-            rows = db.execute("SELECT id, closed, state, job, meal FROM threads WHERE state IN ('prepared','logged','uncertain') "
+            rows = db.execute("SELECT id, closed, state, job, meal FROM threads WHERE state IN ('prepared','logged','uncertain','failed') "
                               "AND closed>? ORDER BY closed DESC", (now - hours * 3600,)).fetchall()
             out = []
             for thread, closed, state, job, meal in rows:
@@ -135,14 +136,43 @@ class MealThreads:
                     elif resolved == "uncertain":
                         state = "uncertain"
                     elif resolved == "failed":
-                        db.execute("UPDATE threads SET state='failed' WHERE id=?", (thread,))
-                        continue
+                        state = "failed"
                     if state != "prepared":
                         db.execute("UPDATE threads SET state=? WHERE id=?", (state, thread))
                 data = json.loads(meal) if meal else {}
                 out.append({"closed": closed, "meal": data.get("meal", "other"), "items": data.get("items", []),
-                            "state": {"logged": "written", "uncertain": "uncertain"}.get(state, "pending")})
+                            "state": {"logged": "written", "uncertain": "uncertain", "failed": "failed"}.get(state, "pending")})
         return out
+
+    def reopen(self, job, text, now=None):
+        return self.try_reopen(job, text, now)[0]
+
+    def try_reopen(self, job, text, now=None):
+        """The executor saved nothing for `job`: the meal thread is open again with the confirmed plan as its draft.
+
+        Turns are kept and `text` is added as a bot turn. Idempotent: once reopened the thread no longer carries the job.
+        Returns (thread id, reason): thread id None with reason "busy" when another open thread already holds a draft,
+        "no_plan" for an unknown job or a thread without a stored plan; a job that was already reopened gives (None, "restored")."""
+        now = time.time() if now is None else now
+        with self.lock, self.connection() as db:
+            row = db.execute("SELECT id, meal FROM threads WHERE job=? AND state IN ('prepared','failed')", (job,)).fetchone()
+            plan = (json.loads(row[1]) if row and row[1] else {}).get("plan") if row else None
+            if not plan:
+                # No row: an earlier delivery of the same receipt already reopened it (the job column is cleared).
+                return None, ("no_plan" if row else "restored")
+            thread = row[0]
+            for other, draft in db.execute("SELECT id, draft FROM threads WHERE state='open' AND id!=?", (thread,)).fetchall():
+                if draft:
+                    return None, "busy"
+                # The owner already started talking in a new thread: its turns continue this one.
+                db.execute("UPDATE turns SET thread=? WHERE thread=?", (thread, other))
+                db.execute("DELETE FROM threads WHERE id=?", (other,))
+            db.execute("UPDATE threads SET state='open', closed=NULL, job=NULL, meal=NULL, draft=? WHERE id=?",
+                       (json.dumps(plan, ensure_ascii=False), thread))
+            db.execute("INSERT INTO turns (thread, role, ts, text, voice, images) VALUES (?,?,?,?,?,?)",
+                       (thread, "bot", now, text, "", "[]"))
+        telemetry.emit("thread_reopen", thread=thread)
+        return thread, "restored"
 
     def cleanup(self, now=None):
         """Drop images older than 24 h (turn or stray file); close an idle thread."""

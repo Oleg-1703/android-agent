@@ -98,14 +98,47 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
         })) { "FatSecret не принял текст." }
     }
+    /** Loading indicator or a changed screen keeps waiting (up to ~30 s); an idle wrong screen stops at [timeoutMillis]. */
     private fun waitFor(timeoutMillis: Long = 10_000, test: () -> Boolean) {
-        val end = SystemClock.elapsedRealtime() + timeoutMillis
-        while (SystemClock.elapsedRealtime() < end) {
+        val start = SystemClock.elapsedRealtime()
+        val patience = ScreenPatience(timeoutMillis)
+        while (true) {
             check(!Thread.currentThread().isInterrupted) { "Screen operation cancelled" }
             if (try { main(test) } catch (_: IllegalArgumentException) { false }) return
+            val stamp = try { main { FatAccessibilityService.instance?.screenStamp } } catch (_: IllegalArgumentException) { null }
+            val loading = try { main { loadingVisible() } } catch (_: IllegalArgumentException) { false }
+            if (patience.shouldStop(SystemClock.elapsedRealtime() - start, stamp, loading)) break
             SystemClock.sleep(200)
         }
-        throw IllegalArgumentException("FatSecret не открыл ожидаемый экран. Запрос остановлен. Проверь дневник перед повторной отправкой; автоматического повтора не было.")
+        throw ScreenTimeout("FatSecret не открыл ожидаемый экран. Запрос остановлен. Проверь дневник перед повторной отправкой; автоматического повтора не было.")
+    }
+    private fun loadingVisible(): Boolean {
+        var visited = 0
+        fun walk(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (depth > 12 || visited++ > 300) return false
+            if (node.isVisibleToUser && node.className?.toString() == "android.widget.ProgressBar") return true
+            for (index in 0 until node.childCount) if (node.getChild(index)?.let { walk(it, depth + 1) } == true) return true
+            return false
+        }
+        return walk(root(), 0)
+    }
+    /**
+     * Before any save press a screen that did not open is retried from a known state (diary) up to [attempts] times in all.
+     * Never repeats once the custom product was created or a save started.
+     */
+    private fun <T> navigating(attempts: Int = 3, block: () -> T): T {
+        var tries = 0
+        val started = SystemClock.elapsedRealtime()
+        customCommitStarted = false
+        while (true) {
+            try { return block() } catch (error: ScreenTimeout) {
+                // The whole transaction runs under one 120 s screen lease: leave time for the save and its verification.
+                if (customCommitStarted || ++tries >= attempts || SystemClock.elapsedRealtime() - started > 45_000) throw error
+                searchProgress?.invoke("FatSecret открывается медленно, пробую ещё раз ($tries из ${attempts - 1}).")
+                try { cancelCustomDraft() } catch (_: IllegalArgumentException) { /* already on a plain screen */ }
+                try { diary(allowDraft = true) } catch (recovery: IllegalArgumentException) { error.addSuppressed(recovery); throw error }
+            }
+        }
     }
     fun requireReady() {
         // Outside main(): re-enabling may wait for the system and the outage message uses the network.
@@ -610,7 +643,8 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         click(exact.single())
     }
     /** Custom-food creation is itself journaled before entering this method. */
-    override fun createCustom(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
+    override fun createCustom(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String = navigating { createCustomOnce(meal, item, onContext) }
+    private fun createCustomOnce(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
         customCommitStarted = false
         MealNutrition.validate(item)
         val n = item.getJSONObject("nutrition")
@@ -829,7 +863,8 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         }
         throw IllegalArgumentException("Выбранная еда больше не видна. Ничего не записано.")
     }
-    override fun prepareExisting(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
+    override fun prepareExisting(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String = navigating { prepareExistingOnce(meal, item, onContext) }
+    private fun prepareExistingOnce(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): String {
         existingIdentity = null
         val queries = FoodSearch.queries(item)
         val found = linkedMapOf<Row, String>()
@@ -929,7 +964,8 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             SavedMealDraft(row.name.trim(), ingredients, number("calories_tv"), number("protein_tv"), number("fat_tv"), number("carbohydrates_tv"))
         }
     }
-    override fun prepareSaved(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): SavedMealDraft {
+    override fun prepareSaved(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): SavedMealDraft = navigating { prepareSavedOnce(meal, item, onContext) }
+    private fun prepareSavedOnce(meal: String, item: org.json.JSONObject, onContext: (String) -> Unit): SavedMealDraft {
         existingIdentity = null
         customCommitStarted = false
         require(!item.has("grams") && item.optString("count", "1").toBigDecimal().compareTo(java.math.BigDecimal.ONE) == 0 && item.optString("unit", "servings") == "servings") {

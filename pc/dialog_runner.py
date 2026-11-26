@@ -78,6 +78,10 @@ def run_dialog(dialog, real=False, cli="claude"):
                 for number, turn in enumerate(dialog["turns"], 1):
                     clock["now"] = START + turn.get("at", 0) * 60
                     state["turn"], before, problems = turn, len(calls), []
+                    if turn.get("phone_receipt"):
+                        problems = phone_receipt(server, turn, f"{turn['of_turn']:032x}")
+                        results.append((number, problems))
+                        continue
                     if turn.get("cancel"):
                         got = server.threads.cancel()
                         if got != turn.get("expect", {}).get("cancelled", True):
@@ -97,12 +101,49 @@ def run_dialog(dialog, real=False, cli="claude"):
                     except ValueError as error:
                         result = {"status": "failed", "message": str(error)}
                     with server.jobs.connection() as db:
-                        job = "complete" if result["status"] == "prepared" else result["status"]
+                        job = ("complete" if turn.get("job_written", True) else "prepared") if result["status"] == "prepared" else result["status"]
                         db.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?)", (payload["_execution_id"], "f", job, json.dumps(result, ensure_ascii=False)))
                     results.append((number, check(turn.get("expect", {}), result, calls[before:], server)))
             finally:
                 server.jobs.close()
     return results
+
+
+def phone_receipt(server, turn, key):
+    """The phone reports the receipt of an earlier prepared turn (`of_turn`): stored like the HTTP handler does, then the restore hook."""
+    body = json.loads(json.dumps(turn["phone_receipt"]))
+    with server.jobs.connection() as db:
+        db.execute("UPDATE jobs SET state='executing', result=? WHERE id=?", (json.dumps({"target": "phone"}), key))
+    server.jobs.finish_phone(key, body)
+    response = server.on_phone_receipt(key, body)
+    for _ in range(turn.get("repeat", 0)):  # a retried delivery of the same receipt
+        server.jobs.finish_phone(key, body)
+        response = server.on_phone_receipt(key, body)
+    expect = turn.get("expect", {})
+    problems = check_thread(expect.get("thread", {}), server)
+    for name, value in expect.get("response", {}).items():  # what the PC tells the phone in the receipt response
+        if response.get(name) != value:
+            problems.append(f"receipt response {name}={response.get(name)!r}, expected {value!r}")
+    return problems
+
+
+def check_thread(expect, server):
+    problems = []
+    open_id = server.threads.open_thread()
+    draft = server.threads.draft(open_id)
+    bot = [turn["text"] for turn in server.threads.turns(open_id) if turn["role"] == "bot"]
+    if "draft" in expect and bool(draft) != expect["draft"]:
+        problems.append(f"draft present {bool(draft)}")
+    names = " | ".join(str(item.get("query", "")).lower() for item in (draft or {}).get("items", []))
+    for part in expect.get("draft_items", []):
+        if part.lower() not in names:
+            problems.append(f"draft lacks {part!r}: {names}")
+    if "bot_turns" in expect and len(bot) != expect["bot_turns"]:
+        problems.append(f"{len(bot)} bot turns, expected {expect['bot_turns']}")
+    for part in expect.get("last_bot_contains", []):
+        if not bot or part not in bot[-1]:
+            problems.append(f"last bot turn lacks {part!r}")
+    return problems
 
 
 def outcome(result):
@@ -156,4 +197,9 @@ def check(expect, result, calls, server):
     for part in expect.get("reply_contains", []):
         if part not in result.get("message", ""):
             problems.append(f"reply lacks {part!r}")
+    for part in expect.get("reply_lacks", []):
+        if part.lower() in result.get("message", "").lower():
+            problems.append(f"reply has {part!r}")
+    if "thread" in expect:
+        problems += check_thread(expect["thread"], server)
     return problems

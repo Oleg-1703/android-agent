@@ -170,7 +170,7 @@ class MealJobs:
     def finish_phone(self, key, result):
         if not isinstance(result, dict) or result.get('status') not in {'complete', 'failed', 'uncertain'}:
             raise ValueError('invalid_receipt')
-        if set(result) - {'status', 'receipts', 'message', 'notes', 'sources', 'stage'}:
+        if set(result) - {'status', 'receipts', 'message', 'notes', 'sources', 'stage', 'ui_state'}:
             raise ValueError('invalid_receipt')
         receipts = result.get('receipts', [])
         if not isinstance(receipts, list) or len(receipts) > 10:

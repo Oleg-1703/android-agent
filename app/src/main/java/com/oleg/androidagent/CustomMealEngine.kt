@@ -95,6 +95,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
         val receipts = org.json.JSONArray()
         val unverified = mutableListOf<String>()
         store.put("custom_receipts", receipts.toString())
+        store.put("custom_unverified", "")
         for (item in items) {
             progress("ИИ разобрал запрос. Открываю FatSecret и читаю дневник перед записью.")
             // An unreadable diary does not stop the write (a duplicate is cheap); it only makes verification impossible.
@@ -118,14 +119,19 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
                     else ui.createCustom(plan.getString("meal"), item, onContext)
                 }
             } catch (error: Exception) {
+                if (error is InterruptedException) throw error
                 if (existing || (cleanupPrewrite && !ui.commitStarted())) {
+                    // Nothing was saved and Save was never pressed: the journal must not turn this into an "uncertain" write,
+                    // even when the screen is too broken to close the draft (the next request starts from the diary anyway).
                     try {
                         if (existing) ui.cancelExistingDraft() else ui.cancelCustomDraft()
                     } catch (cleanupError: Exception) {
                         error.addSuppressed(cleanupError)
-                        throw error
                     }
                     store.put("write_intent", "")
+                    val reason = if (error is ScreenTimeout) "FatSecret не открылся вовремя, ничего не записано."
+                        else (error.message?.trimEnd()?.takeIf { it.isNotBlank() } ?: "Сбой экрана FatSecret.") + " Ничего не записано."
+                    throw PreCommitFailure(reason.take(700), "open_screen", error)
                 }
                 throw error
             }
@@ -155,6 +161,7 @@ class CustomMealEngine(private val store: StateStore, private val ui: CustomMeal
             } else {
                 // Save was pressed exactly once. Unreadable or unmatched diary = uncertain, never a failure and never a lock.
                 unverified.add(preview.substringBefore('\n'))
+                store.put("custom_unverified", "1") // a later pre-commit failure must not look like "nothing was written"
                 store.put("last_result", "Возможно записано (дневник не сверен): " + preview.substringBefore('\n'))
             }
             store.put("write_intent", "")
