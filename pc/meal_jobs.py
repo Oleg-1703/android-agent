@@ -127,9 +127,10 @@ class MealJobs:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="custom-meal")
         with self.connection() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS phone_claims (job_id TEXT PRIMARY KEY, token TEXT NOT NULL)")
             db.execute("UPDATE jobs SET state='uncertain', result=? WHERE state IN ('queued','running')",
                        (json.dumps({"message": "ПК перезапустился во время обработки. Проверь дневник; автоматического повтора не будет."}),))
-            for key, raw in db.execute("SELECT id,result FROM jobs WHERE state='executing'").fetchall():
+            for key, raw in db.execute("SELECT id,result FROM jobs WHERE state='executing' AND id NOT IN (SELECT job_id FROM phone_claims)").fetchall():
                 result = json.loads(raw)
                 result['message'] = 'Связь с исполнением на телефоне прервалась. Проверь дневник; автоматического повтора нет.'
                 db.execute("UPDATE jobs SET state='uncertain',result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), key))
@@ -153,17 +154,23 @@ class MealJobs:
             result["message"] = "Последний запрос завершился ошибкой.\n" + result.get("message", "Запись не выполнена.")
         return result
 
-    def claim_phone(self, key):
+    def claim_phone(self, key, token=None):
+        if token is not None and (not isinstance(token, str) or not re.fullmatch(r'[a-f0-9-]{36}', token)):
+            raise ValueError('invalid_claim_token')
         with self.lock, self.connection() as db:
-            row = db.execute('SELECT state,result FROM jobs WHERE id=?', (key,)).fetchone()
+            row = db.execute('SELECT state,result,(SELECT token FROM phone_claims WHERE job_id=jobs.id) FROM jobs WHERE id=?', (key,)).fetchone()
             if row is None:
                 raise ValueError('unknown_job')
             data = json.loads(row[1])
             if data.get('target') != 'phone':
                 raise ValueError('wrong_executor')
+            if row[0] == 'executing' and token is not None and row[2] == token:
+                return {'status': 'claimed'}
             if row[0] != 'prepared':
                 return {'status': 'already_started', 'message': 'Этот запрос уже начинал выполняться. Автоматический повтор запрещён.'}
             result = {'target': 'phone', 'message': 'Запись выполняется на телефоне.'}
+            if token is not None:
+                db.execute('INSERT INTO phone_claims (job_id,token) VALUES (?,?)', (key, token))
             db.execute("UPDATE jobs SET state='executing',result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), key))
         return {'status': 'claimed'}
 

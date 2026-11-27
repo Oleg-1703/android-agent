@@ -95,7 +95,7 @@ class CustomTransportTests(unittest.TestCase):
         body = self.payload()
         self.request('POST', '/v1/log', body)
         body['text'] = 'different meal'
-        self.assertEqual(self.request('POST', '/v1/log', body)[0], 400)
+        self.assertEqual(self.request('POST', '/v1/log', body), (409, {'error': 'request_id_conflict'}))
 
     @patch.object(brain, 'Emulator')
     @patch.object(brain, 'parse_meal')

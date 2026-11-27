@@ -856,7 +856,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError()
                 body = json.loads(self.rfile.read(length))
                 key, action = phone_receipt.groups()
-                result = self.server.jobs.claim_phone(key) if action == 'claim' else self.server.jobs.finish_phone(key, body)
+                result = self.server.jobs.claim_phone(key, body.get("claim_token")) if action == 'claim' else self.server.jobs.finish_phone(key, body)
                 if action == "receipt":
                     result = {**result, **(self.server.on_phone_receipt(key, body) or {})}
                 telemetry.emit("phone_" + action, req=key, ok=True, err_class=str(body.get("stage") or "")[:40] if action == "receipt" and body.get("status") != "complete" else None,
@@ -908,7 +908,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(202, {"request_id": request_id, **result})
             except (ValueError, KeyError, TypeError, TimeoutError) as error:
                 telemetry.emit("request_rejected", ok=False, err_class=model_error_class(error))
-                self.respond(400, {"error": "invalid_request"})
+                conflict = str(error) == "request_id_conflict"
+                self.respond(409 if conflict else 400, {"error": "request_id_conflict" if conflict else "invalid_request"})
             return
         if self.path != "/v1/meal":
             self.respond(404, {"error": "not_found"})

@@ -8,8 +8,8 @@ android {
         minSdk = 30
         targetSdk = 35
         testInstrumentationRunner = "com.oleg.androidagent.DeviceSmoke"
-        versionCode = 23
-        versionName = "0.9.11"
+        versionCode = 24
+        versionName = "0.9.12"
     }
 }
 

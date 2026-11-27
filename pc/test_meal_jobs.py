@@ -103,6 +103,27 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.done(key)['status'], 'prepared')
         return key
 
+    def test_same_claim_token_recovers_lost_reply_and_survives_restart(self):
+        key = self.prepare_phone()
+        token = '12345678-1234-1234-1234-123456789abc'
+        self.assertEqual(self.jobs.claim_phone(key, token)['status'], 'claimed')
+        self.jobs.close()
+        self.jobs = MealJobs(self.path, self.processor)
+        self.assertEqual(self.jobs.claim_phone(key, token)['status'], 'claimed')
+        self.assertEqual(self.jobs.claim_phone(key, 'a' * 36)['status'], 'already_started')
+        self.assertEqual(self.jobs.claim_phone(key)['status'], 'already_started')
+        self.assertNotIn('claim_token', self.jobs.get(key))
+        self.jobs.finish_phone(key, {'status': 'failed', 'receipts': [], 'message': 'cancelled'})
+        self.assertEqual(self.jobs.claim_phone(key, token)['status'], 'already_started')
+        self.assertEqual(self.processor.call_count, 1)
+
+    def test_invalid_claim_token_does_not_change_job(self):
+        key = self.prepare_phone()
+        for token in ['', 12, 'private-food-text']:
+            with self.assertRaises(ValueError):
+                self.jobs.claim_phone(key, token)
+        self.assertEqual(self.jobs.get(key)['status'], 'prepared')
+
     def test_phone_claim_is_granted_only_once(self):
         key = self.prepare_phone()
         self.assertEqual(self.jobs.claim_phone(key)['status'], 'claimed')

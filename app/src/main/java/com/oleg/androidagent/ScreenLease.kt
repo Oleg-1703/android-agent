@@ -14,3 +14,7 @@ internal class ScreenLease(context: Context, timeoutMillis: Long = 120_000) : Au
     val active: Boolean get() = lock.isHeld
     override fun close() { if (lock.isHeld) lock.release() }
 }
+
+internal fun closeScreenLease(lease: AutoCloseable, reset: () -> Unit) {
+    try { lease.close() } finally { reset() }
+}

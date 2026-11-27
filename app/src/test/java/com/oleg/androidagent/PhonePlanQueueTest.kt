@@ -55,6 +55,22 @@ class PhonePlanQueueTest {
         assertEquals(1, queue.drain({ true }, runner::run).size)
         assertEquals(1, writes)
     }
+    @Test fun lostClaimStaysQueuedAndNotifiesOnceThenContinues() {
+        val queue = PhonePlanQueue(Store(), "scope")
+        queue.add("a".repeat(64), prepared())
+        assertEquals(1, queue.drain({ true }) { _, _ -> JSONObject().put("status", "claiming").put("notify", true) }.size)
+        assertTrue(queue.pending())
+        assertTrue(queue.drain({ true }) { _, _ -> JSONObject().put("status", "claiming").put("notify", false) }.isEmpty())
+        assertTrue(queue.pending())
+        assertEquals(1, queue.drain({ true }) { _, _ -> JSONObject().put("status", "complete") }.size)
+        assertFalse(queue.pending())
+    }
+    @Test fun expiredPlanIsDrainedEvenWhilePhoneIsLocked() {
+        val queue = PhonePlanQueue(Store(), "scope")
+        queue.add("a".repeat(64), prepared().also { it.getJSONObject("plan").put("date", LocalDate.now().minusDays(1).toString()) })
+        assertEquals(1, queue.drain({ false }) { _, _ -> JSONObject().put("status", "failed") }.size)
+        assertFalse(queue.pending())
+    }
     @Test fun uncertainResultDoesNotStopTheRestOfTheQueue() {
         val queue = PhonePlanQueue(Store(), "scope")
         queue.add("a".repeat(64), prepared()); queue.add("b".repeat(64), prepared())

@@ -15,13 +15,14 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         val token = config.optString("bot_token")
         if (token.isBlank()) httpClient else httpClient.newBuilder().addInterceptor(PcUrlInterceptor(config, PcUrlRecovery(config, store, { chat -> TelegramApi(token, httpClient).chat(chat) }))).build()
     }
-    private fun plans(): PhonePlanQueue {
-        // The address is not part of the scope: it changes with every tunnel restart and must not orphan queued plans.
+    private fun scope(): String {
         val identity = config.optString("pc_pairing") + ":" + config.optString("bot_token") + ":" + config.optString("chat_id")
-        val scope = java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
-        return PhonePlanQueue(requireNotNull(store), scope)
+        return java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
     }
-    fun hasPendingPhone() = config.optBoolean("pc_execute_on_phone") && plans().pending()
+    private fun plans() = PhonePlanQueue(requireNotNull(store), scope())
+    internal fun acceptedMessages() = AcceptedPcMessages(requireNotNull(store), scope())
+    private fun pendingJobs() = PendingPcJobs(requireNotNull(store), scope())
+    fun hasPendingPhone() = store != null && (pendingJobs().rows().isNotEmpty() || (config.optBoolean("pc_execute_on_phone") && plans().pending()))
     fun resolveFood(item: JSONObject, rows: List<FatUi.Row>, saved: Boolean): Int? {
         require(rows.size in 1..80)
         val body = JSONObject().put("intent", item).put("saved", saved).put("candidates", org.json.JSONArray(rows.map {
@@ -44,8 +45,49 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
     }
     /** A rendered receipt; [confirm] = the PC reopened the meal as a draft, so the message carries the "Записать" button. */
     data class Rendered(val text: String, val confirm: Boolean)
-    fun resumePhoneRendered(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<Rendered> =
-        plans().drain(ready) { id, prepared -> session { phoneRunner(stage, execute).run(id, prepared) } }.map { Rendered(receipt(it), retryable(it)) }
+    private fun drainPhoneRendered(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<Rendered> =
+        plans().drain(ready) { id, prepared -> if (prepared.getJSONObject("plan").getString("date") != LocalDate.now().toString()) phoneRunner(stage, execute).cancel(id, prepared) else session { phoneRunner(stage, execute).run(id, prepared) } }.map { Rendered(receipt(it), retryable(it)) }
+    fun resumePhoneRendered(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<Rendered> {
+        val replies = mutableListOf<Rendered>()
+        for (row in pendingJobs().rows()) {
+            val id = row.getString("id")
+            val cancelled = row.optBoolean("cancel")
+            lastConfirm = false
+            try {
+                val text = if (row.getString("date") != LocalDate.now().toString()) "Ожидание ответа ПК истекло. Проверь дневник и пришли еду заново, если она не записана."
+                else {
+                    // Short timeout: this runs between Telegram polls, so a silent PC must not delay the next meal.
+                    val result = try { JSONObject(Http.text(client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build(), jobRequest("v1/jobs/$id").get().build(), 16000)) }
+                    catch (error: java.io.IOException) {
+                        if ((error as? ApiFailure)?.status == 404) {
+                            replies.add(Rendered(if (cancelled) "Запрос отменён: ПК его не получил." else "ПК не получил запрос. Пришли еду заново.", false))
+                            pendingJobs().remove(id)
+                        }
+                        continue
+                    }
+                    if (result.optString("status") in setOf("queued", "running")) continue
+                    if (cancelled && result.optString("status") == "prepared" && row.getBoolean("phone")) {
+                        receipt(phoneRunner(stage, execute).cancel(id, result))
+                    } else if (cancelled && result.optString("status") == "failed" && result.optBoolean("confirm")) {
+                        // A newer request owns the PC draft, so only the latest one is closed there.
+                        if (id == store?.get("pc_last_job")) cancelDraft()
+                        "Запрос отменён. Эта еда не записана."
+                    } else finish(id, row.getBoolean("phone"), result, ready, stage, session, execute)
+                }
+                replies.add(Rendered(text, lastConfirm))
+                pendingJobs().remove(id)
+            } catch (error: InterruptedException) {
+                throw error
+            } catch (error: Exception) {
+                // One unusable answer must not stop other rows or the queue. Retried quietly until the date changes;
+                // a plan that already reached the queue belongs to the queue.
+                Telemetry.log("pc_call", Telemetry.requestHash(id), false, errClass = Telemetry.errClass(error), flags = mapOf("call" to "resume"))
+                if (plans().contains(id)) pendingJobs().remove(id)
+            }
+        }
+        if (config.optBoolean("pc_execute_on_phone")) replies.addAll(drainPhoneRendered(ready, stage, session, execute))
+        return replies
+    }
     fun resumePhone(ready: () -> Boolean, stage: () -> String, session: (() -> JSONObject) -> JSONObject = { it() }, execute: (JSONObject) -> JSONObject): List<String> =
         resumePhoneRendered(ready, stage, session, execute).map { it.text }
     /** Best effort: a cancelled estimated draft must not be confirmable by a later "ок". Never breaks the local cancel. */
@@ -57,9 +99,10 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         } catch (_: IllegalArgumentException) {
         }
     }
-    fun cancelPendingPhone(): List<String> = plans().drain({ true }) { id, prepared ->
-        phoneRunner { error("Cancel never executes") }.cancel(id, prepared)
-    }.map(::receipt)
+    fun cancelPendingPhone(): List<String> {
+        pendingJobs().cancelAll()
+        return plans().drain({ true }) { id, prepared -> phoneRunner { error("Cancel never executes") }.cancel(id, prepared) }.map(::receipt).ifEmpty { listOf("Отмена принята. Результат уже запущенного запроса проверю отдельно.") }
+    }
     data class Health(val limited: Boolean, val reset: String, val phone: Boolean = false)
     fun check(): Health {
         val endpoint = endpoint(config.optString("pc_url"))
@@ -188,38 +231,58 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         payload.put("request_id", id)
         val request = jobRequest("v1/log").post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
         store?.put("pc_last_job", id)
+        store?.let {
+            pendingJobs().add(id, phone)
+            acceptedMessages().remove(messages.first().getLong("message_id"))
+        }
+        lastConfirm = false
+        fun complete(result: JSONObject): String {
+            val text = finish(id, phone, result, phoneReady, phoneStage, phoneSession, executeOnPhone)
+            store?.let { pendingJobs().remove(id) }
+            return text
+        }
         val callStarted = System.nanoTime()
-        val response = try { JSONObject(Http.text(client, request, 16000)) } catch (e: Exception) {
-            Telemetry.log("pc_call", Telemetry.requestHash(id), false, (System.nanoTime() - callStarted) / 1_000_000, Telemetry.errClass(e), flags = mapOf("call" to "log"))
-            throw e
+        val response = try { JSONObject(Http.text(client, request, 16000)) }
+        catch (error: java.io.IOException) {
+            Telemetry.log("pc_call", Telemetry.requestHash(id), false, (System.nanoTime() - callStarted) / 1_000_000, Telemetry.errClass(error), flags = mapOf("call" to "log"))
+            if (error is ApiFailure && error.status in 400..499) {
+                store?.let { pendingJobs().remove(id) }
+                if (error.status == 409) return "Запрос с этими сообщениями уже существует с другими данными или датой. Проверь /status и пришли новое сообщение."
+                throw error
+            }
+            return DELAYED
         }
         Telemetry.log("pc_call", Telemetry.requestHash(id), true, (System.nanoTime() - callStarted) / 1_000_000, flags = mapOf("call" to "log"))
-        fun finish(result: JSONObject): String {
-            lastConfirm = result.optString("status") == "failed" && result.optBoolean("confirm")
-            if (lastConfirm) MealTable.draft(result)?.let { return it }
-            if (phone && result.optString("status") in setOf("prepared", "complete", "executing")) {
-                require(result.optString("target") == "phone") { "ПК вернул результат другого исполнителя. Автоматически на эмулятор не переключаюсь." }
-            }
-            return if (result.optString("status") == "prepared" && phone) {
-                phoneRunner(phoneStage, requireNotNull(executeOnPhone)).status(id)?.let { return receipt(it) }
-                plans().add(id, result)
-                val completed = resumePhone(phoneReady, phoneStage, phoneSession, requireNotNull(executeOnPhone))
-                val pending = if (plans().contains(id)) "ИИ распознал еду. План сохранён в очередь. Можно выключить экран. Запишу автоматически после разблокировки телефона; повторно отправлять еду не нужно."
-                else ""
-                MealTable.join(completed + listOf(pending).filter { it.isNotBlank() })
-            } else receipt(result)
-        }
-        if (response.optString("status") !in setOf("queued", "running")) return finish(response)
+        if (response.optString("status") !in setOf("queued", "running")) return complete(response)
+        var failures = 0
         for (attempt in 0 until 200) {
             Thread.sleep(Progress.POLL_MILLIS)
-            val status = try { JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)) } catch (e: Exception) {
-                Telemetry.log("pc_call", Telemetry.requestHash(id), false, errClass = Telemetry.errClass(e), flags = mapOf("call" to "poll"))
-                throw e
+            val result = try { JSONObject(Http.text(client, jobRequest("v1/jobs/$id").get().build(), 16000)) }
+            catch (error: java.io.IOException) {
+                Telemetry.log("pc_call", Telemetry.requestHash(id), false, errClass = Telemetry.errClass(error), flags = mapOf("call" to "poll"))
+                if (++failures >= 3) return DELAYED
+                continue
             }
-            if (status.optString("status") !in setOf("queued", "running")) return finish(status)
+            failures = 0
+            if (result.optString("status") !in setOf("queued", "running")) return complete(result)
             Progress.message(attempt)?.let(progress)
         }
-        return "ПК ещё обрабатывает запрос. Не отправляй еду повторно. Результат: /status."
+        return DELAYED
+    }
+    private fun finish(id: String, phone: Boolean, result: JSONObject, phoneReady: () -> Boolean, phoneStage: () -> String, phoneSession: (() -> JSONObject) -> JSONObject, executeOnPhone: ((JSONObject) -> JSONObject)?): String {
+        lastConfirm = result.optString("status") == "failed" && result.optBoolean("confirm")
+        if (lastConfirm) MealTable.draft(result)?.let { return it }
+        if (phone && result.optString("status") in setOf("prepared", "complete", "executing")) {
+            require(result.optString("target") == "phone") { "ПК вернул результат другого исполнителя. Автоматически на эмулятор не переключаюсь." }
+        }
+        return if (result.optString("status") == "prepared" && phone) {
+            phoneRunner(phoneStage, requireNotNull(executeOnPhone)).status(id)?.let { return receipt(it) }
+            plans().add(id, result)
+            val completed = drainPhoneRendered(phoneReady, phoneStage, phoneSession, requireNotNull(executeOnPhone)).map { it.text }
+            val pending = if (plans().contains(id)) "ИИ распознал еду. План сохранён в очередь. Можно выключить экран. Запишу автоматически после разблокировки телефона; повторно отправлять еду не нужно."
+            else ""
+            MealTable.join(completed + listOf(pending).filter { it.isNotBlank() })
+        } else receipt(result)
     }
     fun jobStatus(): String {
         val id = store?.get("pc_last_job").orEmpty()
@@ -233,6 +296,7 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         private fun post(id: String, action: String, body: JSONObject): JSONObject = JSONObject(Http.text(client.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build(),
             jobRequest("v1/jobs/$id/$action").post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build(), 16000))
         override fun claim(id: String) = post(id, "claim", JSONObject())
+        override fun claim(id: String, token: String) = post(id, "claim", JSONObject().put("claim_token", token))
         override fun report(id: String, result: JSONObject): JSONObject {
             // table/meal are phone-side presentation only; the PC receipt schema does not carry them.
             val wire = JSONObject(result.toString()).apply { remove("table"); remove("meal") }
@@ -261,6 +325,7 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         }.orEmpty()
         return when (result.optString("status")) {
             "queued", "running" -> "Запрос обрабатывается на ПК. Повторять еду не нужно."
+            "claiming" -> result.optString("message")
             "prepared" -> "ПК распознал еду. Запись на телефоне ещё не началась. Автоматически из /status её не запускаю."
             "executing" -> "Запись выполняется на телефоне. Не отправляй еду повторно."
             "complete" -> MealTable.receipt(result) ?: ("Еда сохранена и проверена в твоём FatSecret:\n" +
@@ -272,6 +337,7 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
         }
     }
     companion object {
+        private const val DELAYED = "Ответ ПК задерживается. Запрос сохранён; проверю результат автоматически. Повторно отправлять еду не нужно."
         val PRE_COMMIT_STAGES = setOf("open_screen", "before_commit")
         const val BUSY_FOOTER = "Сейчас у тебя другой черновик, закончи его или напиши «повтори ...»."
         const val RETRY_FOOTER = "Нажми ✅ Записать, чтобы повторить."

@@ -56,11 +56,53 @@ class PhoneMealRunnerTest {
         assertEquals(1, claims)
         assertEquals(1, reports)
     }
-    @Test fun lostClaimNeverStartsPhoneOrRepeatsClaim() {
+    @Test fun refusedClaimIsFinalAndNeverWrites() {
+        var attempts = 0
+        val refusing = object : PhoneMealRunner.Remote {
+            override fun claim(id: String): JSONObject { attempts++; throw ApiFailure(409) }
+            override fun report(id: String, result: JSONObject): JSONObject = error("Nothing to report")
+        }
+        val runner = PhoneMealRunner(store, refusing) { error("No write") }
+        assertEquals("failed", runner.run(id, prepared()).getString("status"))
+        assertEquals("failed", runner.run(id, prepared()).getString("status"))
+        assertEquals(1, attempts)
+    }
+    @Test fun lostClaimRetriesSameTokenThenWritesOnce() {
+        val tokens = mutableListOf<String>()
+        val retryRemote = object : PhoneMealRunner.Remote {
+            override fun claim(id: String): JSONObject = error("Token required")
+            override fun claim(id: String, token: String): JSONObject {
+                tokens.add(token)
+                if (tokens.size <= 2) throw IOException()
+                return JSONObject().put("status", "claimed")
+            }
+            override fun report(id: String, result: JSONObject) = JSONObject().put("status", "accepted")
+        }
+        fun fresh() = PhoneMealRunner(store, retryRemote) { writes++; saved() }
+        assertTrue(fresh().run(id, prepared()).getBoolean("notify"))
+        assertFalse(fresh().run(id, prepared()).getBoolean("notify"))
+        assertEquals("complete", fresh().run(id, prepared()).getString("status"))
+        assertEquals("complete", fresh().run(id, prepared()).getString("status"))
+        assertEquals(1, writes); assertEquals(3, tokens.size); assertEquals(1, tokens.toSet().size)
+    }
+    @Test fun claimingCanBeCancelledEvenWhenOffline() {
         lostClaim = true
-        assertEquals("uncertain", runner().run(id, prepared()).getString("status"))
-        assertEquals("uncertain", runner().run(id, prepared()).getString("status"))
+        runner().run(id, prepared())
+        assertEquals("failed", runner().cancel(id, prepared()).getString("status"))
+        assertEquals("failed", runner().run(id, prepared()).getString("status"))
+        assertEquals(0, writes)
+    }
+    @Test fun yesterdayClaimingStopsWithoutWritingOrRetryingForever() {
+        lostClaim = true
+        val old = prepared().also { it.getJSONObject("plan").put("date", LocalDate.now().minusDays(1).toString()) }
+        assertEquals("failed", runner().run(id, old).getString("status"))
+        assertEquals("failed", runner().run(id, old).getString("status"))
         assertEquals(0, writes); assertEquals(1, claims)
+    }
+    @Test fun legacyClaimingStateRemainsUncertainWithoutRetry() {
+        store.put("phone_job_$id", """{"state":"claiming"}""")
+        assertEquals("uncertain", runner().run(id, prepared()).getString("status"))
+        assertEquals(0, claims); assertEquals(0, writes)
     }
     @Test fun lostReceiptReturnsLocalSuccessAndStatusOnlyRetriesReceipt() {
         lostReceipt = true

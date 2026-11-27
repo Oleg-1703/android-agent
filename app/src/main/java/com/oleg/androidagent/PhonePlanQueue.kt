@@ -22,10 +22,15 @@ class PhonePlanQueue(private val store: StateStore, private val scope: String) {
     }
     fun drain(ready: () -> Boolean, run: (String, JSONObject) -> JSONObject): List<JSONObject> {
         val results = mutableListOf<JSONObject>()
-        while (ready()) {
+        while (true) {
             val row = rows().firstOrNull() ?: break
+            if (!ready() && row.getJSONObject("prepared").getJSONObject("plan").getString("date") == java.time.LocalDate.now().toString()) break
             val id = row.getString("id")
             val result = run(id, row.getJSONObject("prepared"))
+            if (result.optString("status") == "claiming") {
+                if (result.optBoolean("notify")) results.add(result)
+                break
+            }
             // If this commit fails, the runner's durable receipt prevents a second execution.
             save(rows().filterNot { it.getString("id") == id })
             results.add(result)

@@ -5,11 +5,10 @@ import java.util.Locale
 
 object MealBatch {
     fun eligible(message: JSONObject): Boolean {
-        if (message.has("photo") || message.has("voice")) return true
         val text = message.optString("text", message.optString("caption")).trim()
         val command = text.takeWhile { !it.isWhitespace() }.substringBefore('@').lowercase(Locale.ROOT)
         if (text.startsWith("/")) return command == "/meal" && text.any { it.isWhitespace() }
-        return text.isNotBlank() && text.lowercase(Locale.ROOT).trimEnd('?', '.', '!') !in setOf(
+        return (message.has("photo") || message.has("voice") || text.isNotBlank()) && text.lowercase(Locale.ROOT).trimEnd('?', '.', '!') !in setOf(
             "помощь", "привет", "статус", "сегодня", "дневник", "что я сегодня ел", "что я ел сегодня", "покажи дневник", "сколько калорий сегодня",
             "отмена", "отмени", "отмени черновик", "останови агента", "открой fatsecret", "открой фэтсекрет")
     }

@@ -29,8 +29,7 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         val lease = main { ScreenLease(requireNotNull(FatAccessibilityService.instance)) }
         screenLease = lease
         try { return block() } finally {
-            main { lease.close() }
-            screenLease = null
+            closeScreenLease(lease) { screenLease = null }
         }
     }
     var searchState: String = "idle"

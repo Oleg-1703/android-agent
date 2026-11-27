@@ -88,6 +88,12 @@ class AgentService : Service() {
             val offsetKey = "offset_$scope"
             var offset = store.get(offsetKey).toLongOrNull() ?: 0L
             val commands = AgentCommands(store, config, FatSecretApi(config, client), client, FatUi(this))
+            val accepted = PcBrain(config, client, store).acceptedMessages()
+            var recoveryRows = accepted.rows()
+            if (recoveryRows.isNotEmpty()) {
+                offset = maxOf(offset, recoveryRows.maxOf { it.getLong("offset") })
+                store.put(offsetKey, offset.toString())
+            }
             var failures = 0
             val info = try { packageManager.getPackageInfo(packageName, 0) } catch (_: Exception) { null }
             Telemetry.log("app_start", n = mapOf("version_code" to (info?.longVersionCode ?: 0L).toInt(), "sdk" to android.os.Build.VERSION.SDK_INT),
@@ -112,7 +118,12 @@ class AgentService : Service() {
                 val reply = try { commands.handle(message, telegram) }
                 catch (e: IllegalArgumentException) { CommandReply(e.message?.take(700) ?: "Проверь формат сообщения. Помощь: /help.") }
                 catch (_: Exception) { CommandReply("Запрос не выполнен. Проверь подключение и настройки на телефоне. Запись в дневник автоматически не повторялась. Состояние: /status.") }
-                if (running) deliver(reply)
+                val control = message.optString("text", message.optString("caption")).trim().lowercase()
+                if (reply.stop || control.substringBefore(' ').substringBefore('@') == "/cancel" || control in setOf("отмена", "отмени", "отмени черновик")) accepted.clear()
+                if (running) {
+                    deliver(reply)
+                    accepted.remove(message.getLong("message_id"))
+                }
                 return reply.stop
             }
             while (running && !Thread.currentThread().isInterrupted) {
@@ -141,7 +152,7 @@ class AgentService : Service() {
                     if (!running) break
                     store.put("last_contact", System.currentTimeMillis().toString())
                     flusher?.flush()
-                    status("listening", if (commands.hasPendingPhone()) "Еда распознана. Жду разблокировки для записи, экран удерживать не нужно."
+                    status("listening", if (commands.hasPendingPhone()) "Есть незавершённый запрос. Жду ответа ПК или готовности телефона."
                         else "На связи. Открой бота в Telegram и отправь /help.")
                     if (firstPoll) {
                         firstPoll = false
@@ -154,7 +165,19 @@ class AgentService : Service() {
                         if (!running || Thread.currentThread().isInterrupted) break
                         val id = update.getLong("update_id")
                         if (id < offset) continue
-                        // Persist before dispatch: an interrupted command must never replay a diary write.
+                        val acceptedMessage = update.optJSONObject("message")
+                        if (config.optBoolean("pc_consent") && acceptedMessage != null && TelegramAccess.allowed(acceptedMessage, owner) &&
+                            MealBatch.eligible(acceptedMessage) && TelegramFreshness.rejection(acceptedMessage, telegram.serverTimeSeconds()) == null) {
+                            accepted.accept(listOf(acceptedMessage), id + 1)
+                        }
+                        val acceptedCallback = update.optJSONObject("callback_query")
+                        if (config.optBoolean("pc_consent") && acceptedCallback != null) {
+                            val decision = TelegramCallbacks.decide(acceptedCallback, owner, telegram.serverTimeSeconds())
+                            if (decision is TelegramCallbacks.Decision.Accept && decision.confirm &&
+                                TelegramCallbacks.isCurrentDraft(acceptedCallback.getJSONObject("message").optLong("message_id"), store.get("confirm_msg"))) {
+                                accepted.accept(listOf(TelegramCallbacks.asMessage(acceptedCallback, true)), id + 1)
+                            }
+                        }
                         offset = id + 1
                         store.put(offsetKey, offset.toString())
                         val callback = update.optJSONObject("callback_query")
@@ -220,12 +243,15 @@ class AgentService : Service() {
                                 }
                                 val extra = next.optJSONObject("message")
                                 if (extra != null && TelegramAccess.allowed(extra, owner) && !MealBatch.eligible(extra)) {
-                                    val control = extra.optString("text").trim().lowercase()
+                                    val control = extra.optString("text", extra.optString("caption")).trim().lowercase()
                                     cancelled = control.takeWhile { !it.isWhitespace() }.substringBefore('@') in setOf("/cancel", "/stop") ||
                                         control in setOf("отмена", "отмени", "отмени черновик", "останови агента")
                                     break
                                 }
                                 queue.removeFirst()
+                                if (extra != null && TelegramAccess.allowed(extra, owner) && TelegramFreshness.rejection(extra, telegram.serverTimeSeconds()) == null) {
+                                    accepted.accept(batch + extra, nextId + 1)
+                                }
                                 offset = nextId + 1
                                 store.put(offsetKey, offset.toString())
                                 if (extra == null || !TelegramAccess.allowed(extra, owner)) continue
@@ -234,11 +260,26 @@ class AgentService : Service() {
                                 batch.add(extra)
                                 deadline = minOf(started + 180_000, SystemClock.elapsedRealtime() + MealBatch.graceMillis(batch))
                             }
+                            if (cancelled) accepted.remove(message.getLong("message_id"))
                             if (cancelled || !running) continue
                             if (!acked) MealBatch.ack(batch)?.let { telegram.send(owner, it) }
                             message.put("agent_batch", org.json.JSONArray(batch.map { org.json.JSONObject(it.toString()) }))
                         }
                         if (respond(message)) { running = false; break }
+                    }
+                    if (running && recoveryRows.isNotEmpty()) {
+                        val rows = recoveryRows
+                        recoveryRows = emptyList()
+                        for (row in rows) {
+                            if (accepted.rows().none { it.getLong("id") == row.getLong("id") }) continue
+                            offset = maxOf(offset, row.getLong("offset"))
+                            store.put(offsetKey, offset.toString())
+                            val message = accepted.recover(row, telegram.serverTimeSeconds())
+                            if (message == null) {
+                                telegram.send(owner, "Не удалось восстановить принятый запрос: он устарел или уже восстанавливался. Проверь /status и пришли еду заново, если она не записана.")
+                                accepted.remove(row.getLong("id"))
+                            } else if (respond(message)) { running = false; break }
+                        }
                     }
                     if (running) for (receipt in commands.resumePhone(telegram)) deliver(receipt)
                     failures = 0

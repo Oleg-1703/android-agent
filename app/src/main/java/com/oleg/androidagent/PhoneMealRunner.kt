@@ -9,6 +9,7 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
     private val execute: (JSONObject) -> JSONObject) {
     interface Remote {
         fun claim(id: String): JSONObject
+        fun claim(id: String, token: String): JSONObject = claim(id)
         /** The PC's receipt response; `draft_restored: false` (+ `reason`) means the confirmed meal did not return as a draft. */
         fun report(id: String, result: JSONObject): JSONObject
     }
@@ -20,6 +21,7 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
     private fun uncertain(message: String) = JSONObject().put("status", "uncertain").put("message", message)
     fun status(id: String): JSONObject? {
         val local = cached(id) ?: return null
+        if (local.optString("state") == "claiming" && local.has("claim_token")) return null
         if (!local.has("result")) return uncertain("Запрос уже начинал выполняться на телефоне. Проверь FatSecret; автоматического повтора не будет.")
         if (local.optBoolean("needs_report")) {
             try {
@@ -48,16 +50,36 @@ class PhoneMealRunner(private val store: StateStore, private val remote: Remote,
         require(prepared.getString("target") == "phone" && prepared.getString("status") == "prepared")
         val plan = JSONObject(prepared.getJSONObject("plan").toString()).put("_execution_id", id)
         Meals.validate(plan)
-        store.put(key(id), JSONObject().put("state", "claiming").toString())
-        val claim = try { remote.claim(id) } catch (_: IOException) {
-            return uncertain("Не удалось подтвердить начало запроса на ПК. Запись на телефоне не запускалась. Повтор автоматически запрещён.")
+        val local = cached(id) ?: JSONObject().put("state", "claiming").put("claim_token", java.util.UUID.randomUUID().toString())
+        val expired = plan.getString("date") != java.time.LocalDate.now().toString()
+        val stopping = cancel || expired || local.optBoolean("cancel")
+        if (stopping) local.put("cancel", true)
+        store.put(key(id), local.toString())
+        val claim = try { remote.claim(id, local.getString("claim_token")) } catch (error: IOException) {
+            // 409 = the PC refused the claim (unknown job, other executor): retrying cannot help and would hold the queue.
+            val refused = (error as? ApiFailure)?.status == 409
+            if (stopping || refused) {
+                val message = if (stopping) "Запрос отменён до записи. Пришли еду заново, если нужно."
+                    else "ПК не дал начать запись по этому плану. На телефоне ничего не записано. Пришли еду заново."
+                val result = JSONObject().put("status", "failed").put("message", message).put("receipts", JSONArray())
+                store.put(key(id), local.put("state", "finished").put("result", result).toString())
+                return result
+            }
+            val notify = !local.optBoolean("claim_notified")
+            store.put(key(id), local.put("claim_notified", true).toString())
+            return JSONObject().put("status", "claiming").put("notify", notify)
+                .put("message", "Нет ответа ПК на начало записи. На телефоне ничего не записано. Проверь, что ПК включён; повторно еду не отправляй.")
         }
-        if (claim.optString("status") != "claimed") return uncertain(claim.optString("message", "Этот запрос уже выполнялся. Проверь дневник; повтор запрещён."))
+        if (claim.optString("status") != "claimed") {
+            val result = uncertain(claim.optString("message", "Этот запрос уже выполнялся. Проверь дневник; повтор запрещён."))
+            store.put(key(id), local.put("state", "finished").put("result", result).toString())
+            return result
+        }
         store.put(key(id), JSONObject().put("state", "executing").toString())
-        val stale = if (cancel) null else StaleWrite.clear(store)
-        if (!cancel) { store.put("custom_receipts", "[]"); store.put("custom_unverified", "") }
+        val stale = if (stopping) null else StaleWrite.clear(store)
+        if (!stopping) { store.put("custom_receipts", "[]"); store.put("custom_unverified", "") }
         val startedAt = System.nanoTime()
-        val result = if (cancel) JSONObject().put("status", "failed").put("receipts", JSONArray())
+        val result = if (stopping) JSONObject().put("status", "failed").put("receipts", JSONArray())
             .put("message", "Запрос отменён до записи. Эта еда не добавлена.")
         else try { execute(plan) } catch (error: Exception) {
             val receipts = JSONArray(store.get("custom_receipts").ifBlank { "[]" })
