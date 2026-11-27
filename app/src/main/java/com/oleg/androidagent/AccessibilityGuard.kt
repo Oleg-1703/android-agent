@@ -65,8 +65,7 @@ class AccessibilityGuard(private val store: StateStore, private val running: () 
             "Android выключает её после обновления приложения, остановки или сбоя.\n\n" +
             "Как включить: Настройки телефона - Специальные возможности - Установленные службы (или Загруженные приложения) - Android Agent - Включить. " +
             "Распознанная еда дождётся в очереди, повторно отправлять её не нужно. Это сообщение приходит один раз за каждое отключение.\n\n" +
-            "Чтобы не включать вручную, один раз выдай приложению право через ADB: " +
-            "adb shell pm grant com.oleg.androidagent android.permission.WRITE_SECURE_SETTINGS (необязательно, подробности в docs/INSTALL_RU.md)."
+            "Чтобы приложение включало службу само, напиши мне «передай капитану: хочу автовключение», настройка делается один раз."
         @Volatile var current: AccessibilityGuard? = null
 
         /** Real Android pieces. Works only if WRITE_SECURE_SETTINGS was granted over ADB; otherwise returns false. */

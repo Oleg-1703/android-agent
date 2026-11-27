@@ -22,6 +22,7 @@ from meal_jobs import MealJobs, Emulator, validate_plan
 from meal_thread import MealThreads
 from nutrition import enrich, table, table_rows
 import telemetry
+import developer_inbox
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -183,6 +184,12 @@ search_queries (canonical name, reordered words, brand in Latin, localized spell
 named saved meal: source=saved, count='1', unit='servings'. Never give model nutrition for existing/saved."""
 NO_CATALOG_RULES = """Never use source=existing or source=saved: every dish and product is an item with source=estimate (or
 user/label/barcode), always with grams and nutrition."""
+DEVELOPER_RULES = """
+Set developer=true when his NEW message asks the developer/captain to fix, change or add something in this assistant
+or app, or reports a bug in it ('передай капитану', 'исправь бота'). This is independent of kind: one message may
+report a bug and ask to retry a meal. The program forwards his exact words and appends a confirmation. Never say
+you cannot pass it on, never promise a fix or a date. This rule also applies to these non-food requests.
+"""
 
 CONFIRM_WORDS = {"ок", "окей", "ok", "okay", "да", "записать", "записывай", "запиши", "верно", "подтверждаю",
                  "всё верно", "все верно"}
@@ -216,16 +223,18 @@ def reuse_web_facts(plan, draft):
                 item["source_url"] = old["source_url"]
 
 
-def build_schema(catalog):
+def build_schema(catalog, developer=False):
     schema = json.loads(json.dumps(THREAD_SCHEMA))
+    if developer:
+        schema["properties"]["developer"] = {"type": "boolean"}
     if not catalog:
         enum = schema["properties"]["meal"]["anyOf"][0]["properties"]["items"]["items"]["properties"]["source"]["enum"]
         enum[:] = [value for value in enum if value not in {"existing", "saved"}]
     return schema
 
 
-def build_system(catalog):
-    return THREAD_SYSTEM + (CATALOG_RULES if catalog else NO_CATALOG_RULES)
+def build_system(catalog, developer=False):
+    return THREAD_SYSTEM + (CATALOG_RULES if catalog else NO_CATALOG_RULES) + (DEVELOPER_RULES if developer else "")
 
 
 def _hm(ts):
@@ -599,6 +608,7 @@ nutrition or quantities; the executor reads them from the selected card.'''
         new_images = [{"type": "base64", "media_type": value["media_type"], "data": value["data"]}
                       for value in payload.get("images", [])]
         catalog = bool(getattr(self, "config", {}).get("phone_catalog", False))
+        developer_wake = getattr(self, "config", {}).get("developer_wake") or []
         now = time.time()
         threads = self.threads
         threads.cleanup(now)
@@ -618,7 +628,8 @@ nutrition or quantities; the executor reads them from the selected card.'''
         prompt, images = build_prompt(date, now, closed, threads.turns(thread), draft, new_turn, self.library.all())
         with self.busy:
             try:
-                answer = parse_meal(prompt, date, self.cli, self.cwd, schema=build_schema(catalog), system=build_system(catalog),
+                answer = parse_meal(prompt, date, self.cli, self.cwd, schema=build_schema(catalog, bool(developer_wake)),
+                                    system=build_system(catalog, bool(developer_wake)),
                                     images=images, raw=True, text_limit=400000, timeout=120)
             except SubscriptionLimit as error:
                 raise Failure("Достигнут лимит подписки Claude. Ничего не записано. Платный API не подключался." + (" Сброс в " + error.reset if error.reset else ""), "quota") from None
@@ -628,6 +639,12 @@ nutrition or quantities; the executor reads them from the selected card.'''
         threads.add_turn(thread, "user", typed, transcript, new_images, now=now)
         reply = str(answer.get("reply") or "").strip()[:1500]
         acks = self.apply_library(answer.get("library"))
+        if developer_wake and answer.get("developer") is True and (typed or transcript or new_images):
+            status = developer_inbox.forward(self.cwd, typed, transcript, new_images, developer_wake)
+            tele("developer_request", ok=status == "sent", flags={"status": status})
+            acks.append({"sent": "Передал твоё сообщение разработчику.",
+                         "saved": "Сохранил сообщение для разработчика, но разбудить его не удалось: увидит при следующем запуске.",
+                         "failed": "Не смог сохранить сообщение для разработчика."}[status])
         if acks:
             reply = (reply + "\n" + "\n".join(acks)).strip()
         meal = answer.get("meal") if answer.get("kind") == "meal" else None

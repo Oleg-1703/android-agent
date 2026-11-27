@@ -31,7 +31,7 @@ class AccessibilityGuardTest {
         val guard = AccessibilityGuard(store, { up }, { false }, { sent.add(it) }, now = { 1000 }, settle = {})
         assertFalse(guard.ensure()); assertFalse(guard.ensure()); assertFalse(guard.ensure())
         assertEquals(1, sent.size)
-        assertTrue(sent[0].contains("Android Agent") && sent[0].contains("WRITE_SECURE_SETTINGS"))
+        assertTrue(sent[0].contains("Android Agent") && sent[0].contains("автовключение"))
         up = true
         assertTrue(guard.ensure())
         up = false

@@ -409,6 +409,19 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         return "Сводка с экрана FatSecret за сегодня:\n" + meals.entries.joinToString("\n") { "${it.key}: ${it.value}" } +
             "\nЭто сводка разделов, полный состав - в FatSecret."
     }
+    /** The «Food» tab of the search screen, or null while it is scrolled out of the tab strip. Call on the main thread. */
+    private fun foodTab(): AccessibilityNodeInfo? {
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        var visited = 0
+        fun walk(node: AccessibilityNodeInfo, depth: Int) {
+            require(depth <= 10 && visited++ < 100)
+            if (node.isVisibleToUser && node.isEnabled && SearchTabs.isFood(node.text)) matches += node
+            for (index in 0 until node.childCount) node.getChild(index)?.let { walk(it, depth + 1) }
+        }
+        walk(nodes("food_journal_add_indicator").singleOrNull() ?: return null, 0)
+        require(matches.size <= 1) { "Вкладка поиска продуктов недоступна. Ничего не записано." }
+        return matches.singleOrNull()
+    }
     private fun openMeal(meal: String) {
         require(meal in Meals.types)
         diary(); requireToday()
@@ -436,27 +449,18 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
         }
         require(opened) { "Нужный приём пищи не найден в дневнике FatSecret." }
         waitFor { nodes("food_journal_add_indicator").size == 1 }
-        if (main { nodes("edit_text").isEmpty() }) {
+        // FatSecret reopens the last used tab, and «Recipes» has a search field too, so a field alone proves nothing.
+        if (main { nodes("edit_text").isEmpty() || foodTab()?.isSelected != true }) {
             for (step in 0 until 5) {
                 val moved = main { nodes("food_journal_add_indicator").single().performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD) }
                 if (!moved) break
                 SystemClock.sleep(150)
             }
-            main {
-                val tabs = nodes("food_journal_add_indicator").single()
-                val matches = mutableListOf<AccessibilityNodeInfo>()
-                var visited = 0
-                fun walk(node: AccessibilityNodeInfo, depth: Int) {
-                    require(depth <= 10 && visited++ < 100)
-                    if (node.isVisibleToUser && node.isEnabled && node.text?.toString()?.trim()?.lowercase() in setOf("food", "еда", "продукты")) matches += node
-                    for (index in 0 until node.childCount) node.getChild(index)?.let { walk(it, depth + 1) }
-                }
-                walk(tabs, 0)
-                require(matches.size == 1) { "Вкладка поиска продуктов недоступна. Ничего не записано." }
-                click(matches.single())
-            }
+            main { click(requireNotNull(foodTab()) { "Вкладка поиска продуктов недоступна. Ничего не записано." }) }
+            // The tab may report selected before the pages slide, while the old tab's search field is still the only one visible.
+            SystemClock.sleep(700)
         }
-        waitFor { nodes("edit_text").size == 1 }
+        waitFor { nodes("edit_text").size == 1 && foodTab()?.isSelected != false }
         main {
             require(FatUiDate.matches(text("actionbar_subtitle").singleOrNull().orEmpty(), java.time.LocalDate.now())) {
                 "Дата на экране FatSecret не совпадает с сегодняшней или её формат неизвестен. Проверь дату в приложении."

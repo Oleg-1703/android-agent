@@ -25,7 +25,12 @@ IGNORED_HOSTS = {"https://api.trycloudflare.com"}
 
 
 def settings_path() -> Path:
-    return Path(os.environ.get("AA_TELEGRAM_SETTINGS") or Path.home() / ".claude" / "settings.json")
+    override = os.environ.get("AA_TELEGRAM_SETTINGS")
+    if override:
+        return Path(override)
+    # The agent's own bot (same JSON shape) wins over the shared notification bot.
+    own = Path.home() / ".local" / "share" / "android-agent-tools" / "brain" / "telegram.json"
+    return own if own.exists() else Path.home() / ".claude" / "settings.json"
 
 
 def latest_url(log_text: str) -> str | None:
