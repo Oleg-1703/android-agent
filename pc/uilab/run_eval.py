@@ -59,6 +59,8 @@ def main(argv=None):
     parser.add_argument("--codex", help="path to the codex CLI")
     parser.add_argument("--debug", action="store_true",
                         help="save screen text and full model actions under results/debug/ (disposable emulator only)")
+    parser.add_argument("--tasks", type=Path, default=Path(__file__).with_name("tasks.json"),
+                        help="task definition JSON file (default: tasks.json)")
     parser.add_argument("--task")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-calls", type=int, default=150)
@@ -66,7 +68,7 @@ def main(argv=None):
     try:
         device = Device(args.adb, args.serial)
         budget = Budget(args.max_calls)
-        tasks = load_tasks(Path(__file__).with_name("tasks.json"))
+        tasks = load_tasks(args.tasks)
         if args.provider == "claude" and args.model not in (None, "sonnet", "haiku"):
             raise ValueError("unsupported_model")
     except ValueError as error:
@@ -111,7 +113,7 @@ def main(argv=None):
                        "success": False, "steps": 0, "seconds": 0}
             else:
                 try:
-                    device.deadline = started + 300
+                    device.deadline = started + 600
                     device.wake()
                     fallbacks = device.fallback_dumps
                     launcher = device.launcher()
@@ -120,6 +122,9 @@ def main(argv=None):
                         if re.search(r"(?i)error|exception|failed|failure", output):
                             raise RuntimeError("setup_failed")
                     device.home()
+                    # Seeding takes minutes for long lists; the task's time limit starts after it.
+                    started = time.monotonic()
+                    device.deadline = started + 300
                     row, answer = run_task(device, decider, task, budget, emit,
                                            deadline=started + 300, launcher=launcher, trace=trace)
                     row["fallback_dumps"] = device.fallback_dumps - fallbacks

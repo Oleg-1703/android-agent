@@ -73,7 +73,7 @@ class Device:
 
     def _focus(self):
         focus = self.shell("dumpsys activity activities")
-        match = re.search(r"(?:mResumedActivity|topResumedActivity).*? ([\w.]+)/([\w.$]+)", focus)
+        match = re.search(r"(?:ResumedActivity|topResumedActivity).*? ([\w.]+)/([\w.$]+)", focus)
         if not match:
             raise ValueError("no_foreground_activity")
         sizes = re.findall(r"(\d+)x(\d+)", self.shell("wm size"))

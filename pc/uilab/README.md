@@ -11,3 +11,5 @@ Setup очищает тестовые будильники, контакты и 
 Результаты: `uilab/results/<UTC>.jsonl`, без текста экрана, мыслей, ответа и введённых строк; успех решает checker.
 Экраны, где `uiautomator dump` не дожидается idle, читает `dumper/uidump.jar` (сборка: `dumper/build.sh`, нужен `UILAB_TOOLS`).
 Лимиты: 25 шагов / 300 секунд на задачу; Unicode-ввод unsupported; всплывающие окна (tooltip, выпадающие списки) в наблюдение не попадают.
+
+Отложенный набор: [HELDOUT.md](HELDOUT.md). Выбор: `--tasks uilab/tasks_heldout.json`.
