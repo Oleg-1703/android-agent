@@ -22,3 +22,7 @@ __pycache__/
 events.jsonl
 events.jsonl.tmp
 reports/
+
+# UI lab run outputs (screen text in results/debug/ stays local)
+pc/uilab/results/
+pc/uilab/dumper/*.jar
