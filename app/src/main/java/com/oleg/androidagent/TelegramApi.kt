@@ -66,6 +66,25 @@ class TelegramApi(private val token: String, private val client: OkHttpClient, p
         if (!json.optBoolean("ok")) throw ApiFailure(json.optInt("error_code"), json.optJSONObject("parameters")?.optLong("retry_after") ?: 0)
         return json
     }
+    fun setupOwner(owner: Long, scope: String, store: StateStore) {
+        fun quiet(action: () -> Unit) {
+            try { action() } catch (_: java.io.IOException) { } catch (_: ApiFailure) { }
+        }
+        quiet {
+            val commands = JSONArray()
+            listOf("today" to "Дневник за сегодня", "status" to "Состояние агента", "help" to "Помощь",
+                "cancel" to "Отменить черновик", "stop" to "Остановить агента").forEach { (name, description) ->
+                commands.put(JSONObject().put("command", name).put("description", description))
+            }
+            call("setMyCommands", mapOf("scope" to JSONObject().put("type", "chat").put("chat_id", owner).toString(),
+                "commands" to commands.toString()))
+        }
+        val key = "telegram_connected_$scope"
+        if (store.get(key) != "true") quiet {
+            send(owner, "Android Agent подключён к этому боту. Кнопки внизу, команды - в меню.")
+            store.put(key, "true")
+        }
+    }
     fun identity(): JSONObject = call("getMe", emptyMap()).getJSONObject("result")
     fun chat(chat: Long): JSONObject = call("getChat", mapOf("chat_id" to chat.toString())).getJSONObject("result")
     fun serverTimeSeconds(): Long? = clock.nowSeconds()

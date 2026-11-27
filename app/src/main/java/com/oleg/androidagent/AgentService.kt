@@ -17,6 +17,7 @@ import kotlin.random.Random
 class AgentService : Service() {
     companion object { @Volatile var workerActive = false; private set }
     private val worker = Executors.newSingleThreadExecutor()
+    private val onboarding = Executors.newSingleThreadExecutor()
     @Volatile private var workerThread: Thread? = null
     @Volatile private var idlePolling = false
     @Volatile private var waitingForPhone = false
@@ -156,8 +157,10 @@ class AgentService : Service() {
                         else "На связи. Открой бота в Telegram и отправь /help.")
                     if (firstPoll) {
                         firstPoll = false
-                        telegram.send(owner, "Android Agent запущен. Управление FatSecret через экран, без developer-ключей.\nНажми «Помощь», чтобы начать.")
-                        store.put("last_delivery", System.currentTimeMillis().toString())
+                        onboarding.submit {
+                            val bounded = client.newBuilder().callTimeout(3, TimeUnit.SECONDS).build()
+                            TelegramApi(token, bounded).setupOwner(owner, scope, store)
+                        }
                     }
                     val queue = java.util.ArrayDeque(updates)
                     while (queue.isNotEmpty()) {
@@ -331,6 +334,7 @@ class AgentService : Service() {
         unlockEvents = null
         workerThread?.interrupt()
         client.dispatcher.cancelAll()
+        onboarding.shutdownNow()
         worker.shutdown()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

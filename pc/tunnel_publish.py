@@ -2,8 +2,7 @@
 """Publish the current trycloudflare URL to the owner's Telegram chat as a pinned `AA-URL https://<x>.trycloudflare.com` message.
 
 The phone app reads that pinned message when the PC does not answer, so the tunnel address never has to be typed.
-The bot token and chat id are read at call time from the Windows Claude settings (the same source as the captain's `tg`
-tool) and are never written to the repo or printed. The URL is not a secret; the pairing token still authorizes requests.
+The bot token and chat id are read at call time only from the agent's own Telegram settings and are never written to the repo or printed. The URL is not a secret; the pairing token still authorizes requests.
 """
 from __future__ import annotations
 
@@ -28,9 +27,7 @@ def settings_path() -> Path:
     override = os.environ.get("AA_TELEGRAM_SETTINGS")
     if override:
         return Path(override)
-    # The agent's own bot (same JSON shape) wins over the shared notification bot.
-    own = Path.home() / ".local" / "share" / "android-agent-tools" / "brain" / "telegram.json"
-    return own if own.exists() else Path.home() / ".claude" / "settings.json"
+    return Path.home() / ".local" / "share" / "android-agent-tools" / "brain" / "telegram.json"
 
 
 def latest_url(log_text: str) -> str | None:
@@ -45,8 +42,16 @@ def compose(url: str) -> str:
     return PREFIX + url
 
 
+class TelegramSettingsMissing(FileNotFoundError):
+    pass
+
+
 def credentials(path: Path | None = None) -> tuple[str, str]:
-    env = json.loads((path or settings_path()).read_text(encoding="utf-8"))["mcpServers"]["telegram"]["env"]
+    try:
+        content = (path or settings_path()).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise TelegramSettingsMissing("Telegram settings missing: set AA_TELEGRAM_SETTINGS or create ~/.local/share/android-agent-tools/brain/telegram.json") from None
+    env = json.loads(content)["mcpServers"]["telegram"]["env"]
     return env["TELEGRAM_BOT_TOKEN"], str(env["TELEGRAM_CHAT_ID"])
 
 
@@ -95,7 +100,7 @@ def main(argv=None) -> int:
         elif outcome == "unchanged":
             tele.emit("watchdog_tick", ok=True)  # every 5 minutes: its gaps show when the PC was off
     except Exception as error:  # Never echo request objects: they carry the token in their URL.
-        print("publish failed:", type(error).__name__, getattr(error, "code", ""))
+        print("publish failed:", str(error) if isinstance(error, TelegramSettingsMissing) else type(error).__name__, getattr(error, "code", ""))
         tele.emit("publish", ok=False, err_class=type(error).__name__, flags={"http": getattr(error, "code", 0) or 0})
         return 1
     return 0

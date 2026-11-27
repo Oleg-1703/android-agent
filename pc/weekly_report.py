@@ -351,7 +351,9 @@ def main(argv=None) -> int:
         if args.weekly:
             lines.append(run_weekly(args.workspace, now, args.dry_run))
     except Exception as error:  # never echo request objects: they carry the bot token in their URL
-        lines.append(f"report failed: {type(error).__name__} {getattr(error, 'code', '')}")
+        from tunnel_publish import TelegramSettingsMissing
+        detail = str(error) if isinstance(error, TelegramSettingsMissing) else type(error).__name__
+        lines.append(f"report failed: {detail} {getattr(error, 'code', '')}")
         code = 1
     print("\n".join(lines))
     if not args.dry_run:  # the scheduled tasks have no console: keep a one-line trace of every run
