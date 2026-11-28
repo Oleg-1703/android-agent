@@ -1,0 +1,106 @@
+{
+ "name": "stopped_meal_continue",
+ "about": "confirmed meal; the phone stops before saving (slow screen): the draft returns, 'ок' prepares it again, no duplicate prompt",
+ "images": {},
+ "turns": [
+  {
+   "text": "на обед курица 150 г и картошка 200 г",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft"
+   }
+  },
+  {
+   "at": 1,
+   "text": "ок",
+   "expect": {
+    "outcome": "prepared",
+    "model_called": false,
+    "items_include": [
+     "курица",
+     "картошка"
+    ]
+   },
+   "job_written": false
+  },
+  {
+   "at": 2,
+   "phone_receipt": {
+    "status": "failed",
+    "stage": "open_screen",
+    "receipts": [],
+    "message": "FatSecret не открылся вовремя, ничего не записано.",
+    "ui_state": "custom_open"
+   },
+   "of_turn": 2,
+   "repeat": 1,
+   "expect": {
+    "thread": {
+     "draft": true,
+     "draft_items": [
+      "курица",
+      "картошка"
+     ],
+     "bot_turns": 2,
+     "last_bot_contains": [
+      "Не записалось",
+      "FatSecret не открылся вовремя",
+      "✅"
+     ]
+    },
+    "response": {
+     "draft_restored": true
+    }
+   }
+  },
+  {
+   "at": 3,
+   "text": "ок",
+   "expect": {
+    "outcome": "prepared",
+    "model_called": false,
+    "items_include": [
+     "курица",
+     "картошка"
+    ],
+    "duplicate": false
+   }
+  }
+ ]
+}

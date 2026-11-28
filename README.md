@@ -1,21 +1,52 @@
-# Android Agent — FatSecret-first
+# Android Agent
 
-An experimental **on-device Android 11** personal automation agent. Goal: log meals in an existing FatSecret diary from Telegram commands, without an always-on PC.
+В 0.9.3 весь приём пищи записывается одной своей карточкой с общим весом и суммарными КБЖУ компонентов. Состав остаётся в ответе; если есть оценённые данные, оценкой помечается весь приём. Сокращены возвраты и повторные обходы дневника. Ожидание ИИ проходит с погашенным экраном; готовый план дождётся готовности телефона. Во время ввода агент ограниченно удерживает экран сам. Работа на физическом телефоне остаётся отдельной проверкой.
 
-**Status:** research and early implementation; no verified APK, device test, or automatic diary entries yet.
+Личный бот для записи **своей еды с численными КБЖУ в существующий FatSecret**. Основной маршрут 0.7.0:
 
-## Research outcome
-- FatSecret documents `food_entry.create` (OAuth 1.0 delegated user authorization). **Prefer API integration** if an existing FatSecret account can authorize it; do not assume a developer profile is identical to the user's existing diary.
-- For general Android control, review [Droid](https://github.com/Zfinix/droid) (Apache-2.0), [BunnyRunner](https://github.com/clawbunny/BunnyRunner) (MIT), [PrivateAgent](https://github.com/orailnoor/private-agent) (Flutter + Telegram), and [android-use](https://github.com/j0taaa/android-use). No third-party code has been copied into this repository.
-- Accessibility automation is a fallback for unsupported diary operations and for other phone tasks. Android may prevent screen control when locked or when an app blocks accessibility.
+`Telegram -> Claude Code по подписке на ПК -> FatSecret на выбранном устройстве -> проверка дневника -> ответ в Telegram`.
 
-## Roadmap
-1. Kotlin Android Studio project with restricted Accessibility tree inspection and non-destructive interactions.
-2. Telegram long polling in a foreground service, chat ID allowlist, explicit start/stop, and no raw screen dumps sent to Telegram.
-3. Deterministic FatSecret UI workflow (after real-device UI inspection).
-4. Evaluate OAuth 1.0 three-legged authorization for **existing** FatSecret account and official diary API.
-5. NLP/photo meal parsing and confirmation, retry safety, failure reporting.
-6. CI debug APK, Realme 6 Pro device tests.
+В 0.8.0 есть два исполнителя: **этот телефон** и **эмулятор ПК**. На вкладке ИИ включи «Записывать в FatSecret на этом телефоне», сохрани, один раз включи Android Agent в системных настройках управления и запусти агента. ИИ остаётся на ПК, а запись выполняется в приложении телефона без ожидания межустройственной синхронизации. ПК в этом режиме не вызывает ADB и не записывает еду в эмулятор.
 
-## Security
-The repository is **public**. Never commit Telegram bot tokens, model/API credentials, OAuth tokens, meal history, or UI logs. Android Accessibility permission is powerful; do not enable on an untrusted APK. This project is not production-ready.
+Платный ИИ API и developer-ключи FatSecret не нужны. Пользовательский телефон принимает сообщения бота. Для телефонного исполнения нужны вход в FatSecret и включённое управление Android Agent. Разблокировка требуется только на этапе ввода; FatSecret агент откроет сам. Во время распознавания держать экран включённым не нужно. ПК должен работать в обоих режимах, авторизованный эмулятор требуется только для второго режима.
+
+Исправление 0.7.1 установлено на ПК: чтение пустого последнего раздела и обрезанных строк, раскрытие полей своей еды и русский язык голоса. Оно совместимо с телефонным APK 0.7.0; повторная установка на телефон не требуется.
+
+## Четыре входа
+
+- Текст или голос с точными КБЖУ, названием и съеденным количеством. Указанные цифры сохраняются, каталог не используется.
+- Фото этикетки плюс голос или текст с количеством. Из этикетки берутся значения и их основа, из описания - съеденный вес.
+- Фото блюда с пояснением или без него. Вес, состав и КБЖУ оценивает модель; оценка явно помечается.
+- Фото или цифры штрихкода. После извлечения цифр код проверяется, полные КБЖУ запрашиваются в Open Food Facts. Если товара/данных нет, запись не создаётся и приходит понятный ответ.
+
+Для упаковок КБЖУ без указанной основы принимаются на 100 г с явной пометкой. «Всего», «итого» и «на всю порцию» задают итог съеденной порции. Указанная основа всегда имеет приоритет; этикетка пересчитывается по напечатанной основе. Значения не заменяются похожими продуктами из выдачи.
+
+По явной просьбе «найди существующую еду Ролл с курицей small, 200 г на ужин» используется уже существующая карточка с её КБЖУ. Исполнитель полностью читает первую страницу результатов FatSecret и допускает одно совпадение полного названия либо всех его слов, включая размер и бренд. Нет однозначного совпадения - понятный отказ без подстановки и без записи. Дальние страницы глобального каталога не перебираются.
+
+[Примеры](docs/ONE_MESSAGE_RU.md) · [Установка](docs/INSTALL_RU.md) · [ПК и подписка](docs/PC_BRAIN_RU.md) · [Проверки](docs/PROGRESS.md)
+
+## Настройка
+
+На телефоне установи APK, сохрани токен и числовой ID в Telegram, затем на вкладке ИИ - личные HTTPS-адрес и код ПК. Включи согласие, проверь связь, запусти агента. Ни пароля FatSecret, ни developer-регистрации на телефоне не требуется.
+
+На подготовленном ПК используется `scripts/pc-brain.ps1 start`; FatSecret установлен и авторизован на `emulator-5556`. Нужны app/test APK одной сборки: test APK содержит ограниченный исполнитель для эмулятора и не устанавливается на физический телефон. Помощник сам Telegram не опрашивает, второго приёмника нет.
+
+Фото и голос собираются в один запрос. Фото с подписью считается готовым описанием. Если после фото записываешь длинный голос, отправляй фото без подписи: бот дождётся комментария и сообщит этап обработки. Ожидание может пройти с выключенным экраном. `/status` читает результат или состояние очереди, `/cancel` отменяет ожидающие планы до записи. Одинаковый запрос не создаёт повторной записи после сетевого сбоя.
+
+## Реализация
+
+- Android: Kotlin, Keystore, foreground polling и проверка владельца. `MealBatch` объединяет сообщения; `PcBrain` отправляет асинхронное задание.
+- ПК: HTTP-helper на stdlib, изолированный Claude CLI по подписке, локальный faster-whisper, SQLite-квитанции заданий. Модель выдаёт данные, не команды и не исполняемый код.
+- Эмулятор: фиксированная последовательность Android Accessibility в `FatUi` и `CustomMealEngine`. Своя еда создаётся с проверенными КБЖУ, затем добавляется порция. Журнал пишется перед изменениями. После сохранения проверяется точное изменение дневника; неопределённая запись не повторяется.
+- Open Food Facts используется только для чтения опубликованных данных по штрихкоду с указанием источника. Данные пользовательского дневника туда не отправляются.
+
+Старые экранные команды поиска и developer API остаются вспомогательным режимом разработки; основной ввод еды через подключённый ПК их не вызывает.
+
+## Разработка
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 build
+python -m unittest discover -s pc -v
+```
+
+На ПК Олега Python: `C:/Users/Oleg/.local/bin/python3.14.exe`; голосовое окружение указано в инструкции ПК. Секреты, APK, UI dumps и личные квитанции не коммитятся. Физический Realme, реальный микрофон и доставка нескольких медиа требуют отдельной проверки на пользовательском устройстве. Текущие факты и границы - в PROGRESS.

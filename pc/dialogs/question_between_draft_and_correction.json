@@ -1,0 +1,122 @@
+{
+ "name": "question_between_draft_and_correction",
+ "about": "a question between the draft and the correction does not drop the draft",
+ "images": {
+  "x": "1"
+ },
+ "turns": [
+  {
+   "text": "обед",
+   "images": [
+    "x"
+   ],
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft"
+   }
+  },
+  {
+   "at": 1,
+   "text": "а сколько там белка всего?",
+   "model": {
+    "kind": "chat",
+    "reply": "Около 36 г белка.",
+    "meal": null
+   },
+   "expect": {
+    "outcome": "reply",
+    "reply_contains": [
+     "36"
+    ],
+    "prompt_contains": [
+     "Текущий черновик (показан"
+    ]
+   }
+  },
+  {
+   "at": 2,
+   "text": "курицы было 100, картошки 200",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "100",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "prepared",
+    "model_images": 1,
+    "prompt_contains": [
+     "Около 36 г белка.",
+     "а сколько там белка всего?"
+    ]
+   }
+  }
+ ]
+}

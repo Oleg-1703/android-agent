@@ -13,3 +13,17 @@ local.properties
 secrets.properties
 
 .kotlin/
+.local/
+__pycache__/
+
+*.sqlite
+
+# PC brain event log and weekly reports (private)
+events.jsonl
+events.jsonl.tmp
+reports/
+
+# UI lab run outputs (screen text in results/debug/ stays local)
+agent-looks/
+pc/uilab/results/
+pc/uilab/dumper/*.jar

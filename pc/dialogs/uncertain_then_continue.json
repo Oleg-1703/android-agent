@@ -1,0 +1,95 @@
+{
+ "name": "uncertain_then_continue",
+ "about": "the phone reports an uncertain write; 'продолжи' must not meet an empty dialog: the model says so and asks whether it is in the diary",
+ "images": {},
+ "turns": [
+  {
+   "text": "на обед курица 150 г и картошка 200 г",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Курица",
+       "grams": "150",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "165",
+        "protein": "31",
+        "fat": "3.6",
+        "carbs": "0"
+       }
+      },
+      {
+       "query": "Картошка",
+       "grams": "200",
+       "source": "estimate",
+       "grams_source": "estimate",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "80",
+        "protein": "2",
+        "fat": "0.1",
+        "carbs": "17"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "draft"
+   }
+  },
+  {
+   "at": 1,
+   "text": "ок",
+   "expect": {
+    "outcome": "prepared",
+    "model_called": false
+   }
+  },
+  {
+   "at": 2,
+   "phone_receipt": {
+    "status": "uncertain",
+    "stage": "after_commit",
+    "receipts": [],
+    "message": "Возможно записано, проверь дневник FatSecret."
+   },
+   "of_turn": 2,
+   "expect": {
+    "thread": {
+     "draft": false
+    }
+   }
+  },
+  {
+   "at": 4,
+   "text": "продолжи где остановился",
+   "model": {
+    "kind": "chat",
+    "reply": "Последний обед (курица 150 г, картошка 200 г) записался неточно: возможно, он уже в дневнике. Проверь дневник: если его там нет, предложу его заново.",
+    "meal": null
+   },
+   "expect": {
+    "outcome": "reply",
+    "model_called": true,
+    "prompt_contains": [
+     "uncertain"
+    ],
+    "reply_contains": [
+     "дневник"
+    ],
+    "reply_lacks": [
+     "пуст"
+    ]
+   }
+  }
+ ]
+}

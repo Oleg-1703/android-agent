@@ -1,0 +1,68 @@
+{
+ "name": "library_batch_dish_next_day",
+ "about": "a pot cooked once (total weight and kcal) is saved; next day 300 g of it is logged as its own card with kcal = 300*3400/1800",
+ "images": {},
+ "turns": [
+  {
+   "text": "приготовил бешбармак всего 1800 г, 3400 ккал, запомни",
+   "model": {
+    "kind": "chat",
+    "reply": "Готово.",
+    "meal": null,
+    "library": [
+     {
+      "action": "save",
+      "name": "Бешбармак",
+      "aliases": [
+       "бешбармака"
+      ],
+      "nutrition": {
+       "basis_grams": "1800",
+       "calories": "3400",
+       "protein": "170",
+       "fat": "150",
+       "carbs": "190"
+      },
+      "note": "кастрюля 1800 г, 3400 ккал"
+     }
+    ]
+   },
+   "expect": {
+    "outcome": "reply",
+    "library_has": [
+     "бешбармак"
+    ]
+   }
+  },
+  {
+   "at": 1440,
+   "text": "съел 300 г бешбармака",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "dinner",
+     "items": [
+      {
+       "query": "Бешбармак",
+       "grams": "300",
+       "grams_source": "stated",
+       "source": "library"
+      }
+     ],
+     "notes": ""
+    }
+   },
+   "expect": {
+    "outcome": "prepared",
+    "plan_separate": [
+     true
+    ],
+    "plan_kcal": {
+     "Бешбармак": 567
+    }
+   }
+  }
+ ]
+}

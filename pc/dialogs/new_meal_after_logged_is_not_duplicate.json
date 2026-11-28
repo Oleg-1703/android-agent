@@ -1,0 +1,69 @@
+{
+ "name": "new_meal_after_logged_is_not_duplicate",
+ "about": "a different meal type after logging is not a duplicate",
+ "images": {},
+ "turns": [
+  {
+   "text": "котлеты 335 г",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "lunch",
+     "items": [
+      {
+       "query": "Котлеты",
+       "grams": "335",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "200",
+        "protein": "10",
+        "fat": "10",
+        "carbs": "10"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "prepared"
+   }
+  },
+  {
+   "at": 240,
+   "text": "ужин: котлеты 100 г",
+   "model": {
+    "kind": "meal",
+    "reply": "",
+    "meal": {
+     "date": "2026-11-20",
+     "meal": "dinner",
+     "items": [
+      {
+       "query": "Котлеты",
+       "grams": "100",
+       "source": "label",
+       "grams_source": "stated",
+       "nutrition": {
+        "basis_grams": "100",
+        "calories": "200",
+        "protein": "10",
+        "fat": "10",
+        "carbs": "10"
+       }
+      }
+     ],
+     "notes": "оценка"
+    }
+   },
+   "expect": {
+    "outcome": "prepared",
+    "duplicate": false
+   }
+  }
+ ]
+}
