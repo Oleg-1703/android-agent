@@ -72,7 +72,7 @@ class TelegramApi(private val token: String, private val client: OkHttpClient, p
         }
         quiet {
             val commands = JSONArray()
-            listOf("today" to "Дневник за сегодня", "status" to "Состояние агента", "help" to "Помощь",
+            listOf("look" to AgentLook.DESCRIPTION, "today" to "Дневник за сегодня", "status" to "Состояние агента", "help" to "Помощь",
                 "cancel" to "Отменить черновик", "stop" to "Остановить агента").forEach { (name, description) ->
                 commands.put(JSONObject().put("command", name).put("description", description))
             }

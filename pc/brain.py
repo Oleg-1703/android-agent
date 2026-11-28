@@ -22,6 +22,7 @@ from meal_jobs import MealJobs, Emulator, validate_plan
 from meal_thread import MealThreads
 from nutrition import enrich, table, table_rows
 import telemetry
+import agent_look
 import developer_inbox
 
 SCHEMA = {
@@ -829,6 +830,28 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(30)
         if not self.authorized():
             self.respond(401, {"error": "unauthorized"})
+            return
+        if self.path == "/v1/agent/look":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 180000 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("invalid_look")
+                body = json.loads(self.rfile.read(length))
+                agent_look.validate(body)
+            except (ValueError, TypeError):
+                self.respond(400, {"error": "invalid_look"})
+                return
+            if not self.server.busy.acquire(blocking=False):
+                self.respond(429, {"error": "busy"})
+                return
+            try:
+                self.respond(200, agent_look.look(body, self.server.cwd, self.server.cli))
+            except ValueError:
+                self.respond(503, {"error": "invalid_model_output"})
+            except (RuntimeError, OSError):
+                self.respond(503, {"error": "look_unavailable"})
+            finally:
+                self.server.busy.release()
             return
         if self.path == "/v1/drafts/cancel":
             had_draft = self.server.threads.cancel()

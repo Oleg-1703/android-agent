@@ -24,5 +24,6 @@ events.jsonl.tmp
 reports/
 
 # UI lab run outputs (screen text in results/debug/ stays local)
+agent-looks/
 pc/uilab/results/
 pc/uilab/dumper/*.jar

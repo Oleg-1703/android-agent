@@ -49,13 +49,31 @@ class AgentCommands(
         val text = message.optString("text", message.optString("caption")).trim()
         val command = text.takeWhile { !it.isWhitespace() }.substringBefore('@').lowercase(Locale.ROOT)
         val natural = text.lowercase(Locale.ROOT).trimEnd('?', '.', '!')
+        AgentLook.task(text)?.let { task ->
+            if (task.isBlank()) return CommandReply(AgentLook.USAGE)
+            if (task.length > 2000) return CommandReply("Задача /look - до 2000 символов.")
+            if (!config.optBoolean("pc_consent")) return CommandReply("Подключи помощник ПК и включи согласие на вкладке ИИ.")
+            if (ui == null) return CommandReply("Включи управление Android Agent в специальных возможностях телефона.")
+            val started = System.nanoTime()
+            return try {
+                val observation = ui.lookScreen().put("task", task)
+                val answer = PcBrain(config, client, store).look(observation)
+                CommandReply(AgentLook.reply(answer, (System.nanoTime() - started) / 1_000_000))
+            } catch (e: IllegalArgumentException) {
+                CommandReply(e.message ?: "Не удалось прочитать экран FatSecret.")
+            } catch (_: java.io.IOException) {
+                CommandReply("Не получил ответ ПК для /look. Проверь помощник и соединение. Автоматического повтора нет.")
+            } catch (_: org.json.JSONException) {
+                CommandReply("ПК вернул непонятный ответ /look. Обнови помощник ПК.")
+            }
+        }
         if (ui != null && !config.optBoolean("legacy_api_mode")) {
             return handleUi(message, telegram, text, command, natural)
         }
         when {
             command in setOf("/start", "/help") || natural in setOf("помощь", "привет") -> return CommandReply(
                 "Я на связи. Управление идёт прямо с Android.\n\n" +
-                    "/today - дневник за сегодня\n/status - состояние\n/cancel - отменить подготовленную еду\n/stop - остановить агента\n\n" +
+                    "/look <задача> - ${AgentLook.DESCRIPTION}\n/today - дневник за сегодня\n/status - состояние\n/cancel - отменить подготовленную еду\n/stop - остановить агента\n\n" +
                     if (!apiConnected) "Управление установленным FatSecret через экран ещё в разработке и недоступно в этой сборке. Developer-ключи для него не нужны. Сейчас можно проверить связь и управление агентом командами выше."
                     else "Экспериментальный API-режим. Добавить еду без ИИ:\n/meal ${LocalDate.now()} lunch рис варёный=150;курица=200\n" +
                     "Приём пищи: breakfast (завтрак), lunch (обед), dinner (ужин), other (перекус).\n" +
@@ -140,7 +158,7 @@ class AgentCommands(
                 "Записываю свою еду в твой FatSecret " + (if (config.optBoolean("pc_execute_on_phone")) "на этом телефоне" else "на эмуляторе ПК") + ". Claude работает по твоей подписке на ПК, платного API нет.\n\n" +
                     "1. Текст/голос с названием, весом и точными КБЖУ.\n2. Фото этикетки + голос, сколько съел.\n3. Фото блюда, с пояснением или без: КБЖУ будут оценены и помечены.\n4. Фото/цифры штрихкода + порция: проверю интернет-источник; если полного КБЖУ нет, не запишу.\n\n" +
                     "Можно без /meal. Фото и голос объединяются в один запрос. Точные данные (цифры или этикетка и сколько съел) записываю сразу. Оценённый приём (фото без цифр) сначала покажу по позициям: нажми «✅ Записать» или поправь голосом/текстом.\n" +
-                    "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\n" +
+                    "Для упаковки КБЖУ без указанной основы считаю на 100 г и отмечаю это в ответе. Если это итог всей порции, скажи «всего» или «на всю порцию».\n\nУже есть карточка? «На ужин найди существующую еду Ролл с курицей small, 200 г». Использую точное совпадение с его КБЖУ, новый продукт не создаю. Без однозначного совпадения ничего не запишу.\n\n/look <задача> - ${AgentLook.DESCRIPTION}\n/status - результат последнего запроса\n/stop - остановка приёма сообщений.\n" +
                     (if (config.optBoolean("pc_execute_on_phone")) "ПК должен работать. Во время распознавания экран можно выключить. Готовая еда дождётся разблокировки, затем запишется автоматически. На время ввода удержу экран сам, максимум 2 минуты. Управление Android Agent должно быть включено."
                     else "ПК и эмулятор должны работать; открывать FatSecret на телефоне не нужно. Второй способ - запись на этом телефоне, включается на вкладке ИИ.")
             )

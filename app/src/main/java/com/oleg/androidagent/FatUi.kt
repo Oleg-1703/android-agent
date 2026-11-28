@@ -32,6 +32,80 @@ class FatUi(private val context: Context, private val beforeCustomCommit: () -> 
             closeScreenLease(lease) { screenLease = null }
         }
     }
+    /** Resume the owner's task and observe only; no diary recipe or model execution. */
+    internal fun lookScreen(): org.json.JSONObject {
+        requireReadyOnMain()
+        return withExecutionScreen {
+            main {
+                val active = FatAccessibilityService.instance?.rootInActiveWindow
+                val alreadyOpen = try { active?.packageName?.toString() == FatAccessibilityService.FATSECRET_PACKAGE }
+                    finally { active?.recycle() }
+                if (!alreadyOpen) {
+                    val intent = requireNotNull(context.packageManager.getLaunchIntentForPackage(FatAccessibilityService.FATSECRET_PACKAGE)) { "Установи FatSecret." }
+                    // Launcher NEW_TASK resumes the existing task. Do not retain RESET_TASK_IF_NEEDED.
+                    context.startActivity(intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            }
+            val deadline = SystemClock.elapsedRealtime() + 8000
+            var last: org.json.JSONObject? = null
+            var previous: String? = null
+            while (SystemClock.elapsedRealtime() < deadline) {
+                val current = main {
+                    requireReadyOnMainState()
+                    val active = FatAccessibilityService.instance?.rootInActiveWindow
+                    try {
+                        if (active?.packageName?.toString() != FatAccessibilityService.FATSECRET_PACKAGE) null
+                        else {
+                            val display = context.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+                            var visited = 0
+                            var cut = false
+                            val collected = mutableListOf<AgentLook.Node>()
+                            fun walk(node: AccessibilityNodeInfo, depth: Int) {
+                                if (depth > 60 || visited >= 3000 || collected.size >= 301) { cut = true; return }
+                                visited++
+                                if (node.packageName?.toString() != FatAccessibilityService.FATSECRET_PACKAGE) return
+                                val bounds = Rect()
+                                node.getBoundsInScreen(bounds)
+                                if (node.isVisibleToUser && bounds.intersect(0, 0, display.width(), display.height())) {
+                                    val flags = listOf("clickable" to node.isClickable, "long-clickable" to node.isLongClickable,
+                                        "scrollable" to node.isScrollable, "editable" to node.isEditable, "checkable" to node.isCheckable,
+                                        "checked" to node.isChecked, "selected" to node.isSelected, "focused" to node.isFocused,
+                                        "disabled" to !node.isEnabled).filter { it.second }.map { it.first }
+                                    val password = node.isPassword
+                                    collected.add(AgentLook.Node(node.className?.toString().orEmpty(),
+                                        if (password) "" else node.text?.toString().orEmpty(),
+                                        if (password) "" else node.contentDescription?.toString().orEmpty(),
+                                        node.viewIdResourceName.orEmpty(), flags,
+                                        listOf(bounds.left, bounds.top, bounds.right, bounds.bottom), password))
+                                }
+                                for (i in 0 until node.childCount) {
+                                    val child = node.getChild(i) ?: continue
+                                    try { walk(child, depth + 1) } finally { child.recycle() }
+                                    if (collected.size >= 301 || visited >= 3000) { cut = true; break }
+                                }
+                            }
+                            walk(active!!, 0)
+                            AgentLook.screen(display.width(), display.height(), collected.asSequence()).also {
+                                if (cut) it.put("truncated", true)
+                            }
+                        }
+                    } finally { active?.recycle() }
+                }
+                if (current != null) {
+                    last = current
+                    if (current.toString() == previous) break
+                    previous = current.toString()
+                } else previous = null
+                SystemClock.sleep(250)
+            }
+            requireNotNull(last) { "Не удалось прочитать FatSecret. Открой его и повтори /look." }
+        }
+    }
+    private fun requireReadyOnMainState() {
+        require(context.getSystemService(android.os.PowerManager::class.java).isInteractive &&
+            !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked) { "Разблокируй телефон и повтори /look." }
+        require(FatAccessibilityService.instance != null) { "Включи специальные возможности Android Agent." }
+    }
     var searchState: String = "idle"
         private set
     var diaryRangeState: String = ""

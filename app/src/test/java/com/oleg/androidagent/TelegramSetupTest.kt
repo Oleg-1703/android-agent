@@ -42,7 +42,7 @@ class TelegramSetupTest {
         assertEquals("chat", scope.getString("type"))
         assertEquals(42L, scope.getLong("chat_id"))
         val commands = JSONArray(requests.first().second.getValue("commands"))
-        assertEquals(listOf("today", "status", "help", "cancel", "stop"), (0 until commands.length()).map { commands.getJSONObject(it).getString("command") })
+        assertEquals(listOf("look", "today", "status", "help", "cancel", "stop"), (0 until commands.length()).map { commands.getJSONObject(it).getString("command") })
         val sent = requests.first { it.first == "sendMessage" }.second
         assertEquals("42", sent["chat_id"])
         assertEquals("Android Agent подключён к этому боту. Кнопки внизу, команды - в меню.", sent["text"])

@@ -192,6 +192,17 @@ class PcBrain(private val config: JSONObject, httpClient: OkHttpClient, private 
             else -> null
         }
     }
+    /** Read-only: the usual PC address recovery applies, nothing is executed. */
+    fun look(body: JSONObject): JSONObject {
+        val bounded = client.newBuilder().retryOnConnectionFailure(false)
+            .followRedirects(false).followSslRedirects(false)
+            .callTimeout(75, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(70, java.util.concurrent.TimeUnit.SECONDS).build()
+        val request = jobRequest("v1/agent/look")
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        return JSONObject(Http.text(bounded, request, 16000))
+    }
+
     fun submit(messages: List<JSONObject>, telegram: TelegramApi, phoneStage: () -> String = { "" }, progress: (String) -> Unit = {}, phoneReady: () -> Boolean = { true }, phoneSession: (() -> JSONObject) -> JSONObject = { it() }, executeOnPhone: ((JSONObject) -> JSONObject)? = null): String {
         require(messages.size in 1..12)
         val payload = JSONObject().put("date", LocalDate.now().toString())
